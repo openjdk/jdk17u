@@ -137,7 +137,7 @@ JNIEXPORT jint JNICALL Java_java_net_PlainSocketImpl_connect0
     if (so_rv == 0 && type == SOCK_STREAM && IS_LOOPBACK_ADDRESS(&sa)) {
         NET_EnableFastTcpLoopbackConnect(fd);
     }
-    
+
     rv = connect(fd, &sa.sa, sa_len);
     if (rv == SOCKET_ERROR) {
         int err = WSAGetLastError();
