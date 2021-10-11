@@ -118,8 +118,8 @@ public class IRNode {
     public static final String CALL_OF_METHOD = COMPOSITE_PREFIX + START + "Call.*Java" + MID + IS_REPLACED + " " +  END;
     public static final String DYNAMIC_CALL_OF_METHOD = COMPOSITE_PREFIX + START + "CallDynamicJava" + MID + IS_REPLACED + " " + END;
     public static final String STATIC_CALL_OF_METHOD = COMPOSITE_PREFIX + START + "CallStaticJava" + MID + IS_REPLACED + " " +  END;
-    public static final String TRAP = START + "CallStaticJava" + MID + "uncommon_trap.*reason" + " " + END;
-    public static final String PREDICATE_TRAP = START + "CallStaticJava" + MID + "uncommon_trap.*predicate" + " " +  END;
+    public static final String TRAP = START + "CallStaticJava" + MID + "uncommon_trap.*reason" + END;
+    public static final String PREDICATE_TRAP = START + "CallStaticJava" + MID + "uncommon_trap.*predicate" + END;
     public static final String UNSTABLE_IF_TRAP = START + "CallStaticJava" + MID + "uncommon_trap.*unstable_if" + END;
     public static final String CLASS_CHECK_TRAP = START + "CallStaticJava" + MID + "uncommon_trap.*class_check" + END;
     public static final String NULL_CHECK_TRAP = START + "CallStaticJava" + MID + "uncommon_trap.*null_check" + END;
