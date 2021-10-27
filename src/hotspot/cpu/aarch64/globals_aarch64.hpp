@@ -107,11 +107,13 @@ define_pd_global(intx, InlineSmallCode,          1000);
   product(intx, BlockZeroingLowLimit, 256,                              \
           "Minimum size in bytes when block zeroing will be used")      \
           range(1, max_jint)                                            \
-  product(bool, TraceTraps, false, "Trace all traps the signal handler")\
+  product(bool, TraceTraps, false, "Trace all traps the signal handler") \
   product(int, SoftwarePrefetchHintDistance, -1,                        \
           "Use prfm hint with specified distance in compiled code."     \
           "Value -1 means off.")                                        \
-          range(-1, 4096)
+          range(-1, 4096)                                               \
+  product(bool, UseAESGCMIntrinsics, false,                             \
+          "Use fast interleaved SIMD for AES/GCM")
 
 // end of ARCH_FLAGS
 
