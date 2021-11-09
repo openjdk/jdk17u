@@ -138,7 +138,6 @@ public class bug7154030 {
             robot.waitForIdle();
 
             SwingUtilities.invokeAndWait(new Runnable() {
-
                 @Override
                 public void run() {
                     button.hide();
