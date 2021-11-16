@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1994, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1994, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -1158,6 +1158,11 @@ public class Vector<E>
         ObjectInputStream.GetField gfields = in.readFields();
         int count = gfields.get("elementCount", 0);
         Object[] data = (Object[])gfields.get("elementData", null);
+        if (data == null && !gfields.defaulted("elementData") && count > 0) {
+            // Null or null because of CNFE on one of the contents; Issue: 8276665
+            // The original CNFE has been recorded and will be thrown from OIS.readObject
+            throw new ClassNotFoundException("elementData is null");
+        }
         if (count < 0 || data == null || count > data.length) {
             throw new StreamCorruptedException("Inconsistent vector internals");
         }
