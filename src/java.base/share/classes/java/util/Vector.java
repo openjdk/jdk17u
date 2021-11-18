@@ -1159,8 +1159,9 @@ public class Vector<E>
         int count = gfields.get("elementCount", 0);
         Object[] data = (Object[])gfields.get("elementData", null);
         if (data == null && !gfields.defaulted("elementData") && count > 0) {
-            // Null or null because of CNFE on one of the contents; Issue: 8276665
-            // The original CNFE has been recorded and will be thrown from OIS.readObject
+            // If elementData is null due to 8276665 throwing this exception will not
+            // overwrite the original ClassNotFoundException exception.
+            // That exception has been recorded and will be thrown from OIS.readObject.
             throw new ClassNotFoundException("elementData is null");
         }
         if (count < 0 || data == null || count > data.length) {

@@ -93,8 +93,8 @@ public class VectorElementCNFE {
         Vector<Role> vector = new Vector<>();
         vector.add(role);
 
-        // Modify the byte stream to change the classname to be deserialized to
-        // XectorElementCNFE$Role.
+        // Modify the byte stream effectively remove the "elementData" field
+        // by changing fieldName to be deserialized to "XelementData".
         byte[] bytes = writeObject(vector);
 
         String s = new String(bytes, StandardCharsets.ISO_8859_1);  // Map bytes to chars
