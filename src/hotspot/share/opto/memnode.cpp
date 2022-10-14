@@ -293,6 +293,12 @@ Node *MemNode::Ideal_common(PhaseGVN *phase, bool can_reshape) {
   ctl = in(MemNode::Control);
   // Don't bother trying to transform a dead node
   if (ctl && ctl->is_top())  return NodeSentinel;
+  Node *address = in(MemNode::Address);
+  // Don't try to optimize loads under RAM
+  if (address != NULL && address->is_AddP() && address->in(AddPNode::Base) != NULL &&
+      address->in(AddPNode::Base)->is_ReducedAllocationMerge()) {
+    return NodeSentinel;
+  }
 
   PhaseIterGVN *igvn = phase->is_IterGVN();
   // Wait if control on the worklist.
@@ -326,7 +332,6 @@ Node *MemNode::Ideal_common(PhaseGVN *phase, bool can_reshape) {
     return NodeSentinel; // caller will return NULL
   }
 
-  Node *address = in(MemNode::Address);
   const Type *t_adr = phase->type(address);
   if (t_adr == Type::TOP)              return NodeSentinel; // caller will return NULL
 
@@ -862,7 +867,8 @@ bool LoadNode::is_immutable_value(Node* adr) {
 //----------------------------LoadNode::make-----------------------------------
 // Polymorphic factory method:
 Node* LoadNode::make(PhaseGVN& gvn, Node* ctl, Node* mem, Node* adr, const TypePtr* adr_type, const Type* rt, BasicType bt, MemOrd mo,
-                     ControlDependency control_dependency, bool require_atomic_access, bool unaligned, bool mismatched, bool unsafe, uint8_t barrier_data) {
+                     ControlDependency control_dependency, bool require_atomic_access, bool unaligned, bool mismatched, bool unsafe, uint8_t barrier_data,
+                     bool decode_narrow) {
   Compile* C = gvn.C;
 
   // sanity check the alias category against the created node type
@@ -914,7 +920,7 @@ Node* LoadNode::make(PhaseGVN& gvn, Node* ctl, Node* mem, Node* adr, const TypeP
     load->set_unsafe_access();
   }
   load->set_barrier_data(barrier_data);
-  if (load->Opcode() == Op_LoadN) {
+  if (load->Opcode() == Op_LoadN && decode_narrow) {
     Node* ld = gvn.transform(load);
     return new DecodeNNode(ld, ld->bottom_type()->make_ptr());
   }

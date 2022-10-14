@@ -484,25 +484,31 @@ CompileWrapper::~CompileWrapper() {
 void Compile::print_compile_messages() {
 #ifndef PRODUCT
   // Check if recompiling
-  if (_subsume_loads == false && PrintOpto) {
+  if (!subsume_loads() && PrintOpto) {
     // Recompiling without allowing machine instructions to subsume loads
     tty->print_cr("*********************************************************");
     tty->print_cr("** Bailout: Recompile without subsuming loads          **");
     tty->print_cr("*********************************************************");
   }
-  if (_do_escape_analysis != DoEscapeAnalysis && PrintOpto) {
+  if ((do_escape_analysis() != DoEscapeAnalysis) && PrintOpto) {
     // Recompiling without escape analysis
     tty->print_cr("*********************************************************");
     tty->print_cr("** Bailout: Recompile without escape analysis          **");
     tty->print_cr("*********************************************************");
   }
-  if (_eliminate_boxing != EliminateAutoBox && PrintOpto) {
+  if (do_iterative_escape_analysis() != DoEscapeAnalysis && PrintOpto) {
+    // Recompiling without iterative escape analysis
+    tty->print_cr("*********************************************************");
+    tty->print_cr("** Bailout: Recompile without iterative escape analysis**");
+    tty->print_cr("*********************************************************");
+  }
+  if ((eliminate_boxing() != EliminateAutoBox) && PrintOpto) {
     // Recompiling without boxing elimination
     tty->print_cr("*********************************************************");
     tty->print_cr("** Bailout: Recompile without boxing elimination       **");
     tty->print_cr("*********************************************************");
   }
-  if ((_do_locks_coarsening != EliminateLocks) && PrintOpto) {
+  if ((do_locks_coarsening() != EliminateLocks) && PrintOpto) {
     // Recompiling without locks coarsening
     tty->print_cr("*********************************************************");
     tty->print_cr("** Bailout: Recompile without locks coarsening         **");
@@ -535,15 +541,10 @@ debug_only( int Compile::_debug_idx = 100000; )
 
 
 Compile::Compile( ciEnv* ci_env, ciMethod* target, int osr_bci,
-                  bool subsume_loads, bool do_escape_analysis, bool eliminate_boxing,
-                  bool do_locks_coarsening, bool install_code, DirectiveSet* directive)
+                  Options options, DirectiveSet* directive)
                 : Phase(Compiler),
                   _compile_id(ci_env->compile_id()),
-                  _subsume_loads(subsume_loads),
-                  _do_escape_analysis(do_escape_analysis),
-                  _install_code(install_code),
-                  _eliminate_boxing(eliminate_boxing),
-                  _do_locks_coarsening(do_locks_coarsening),
+                  _options(options),
                   _method(target),
                   _entry_bci(osr_bci),
                   _stub_function(NULL),
@@ -842,11 +843,7 @@ Compile::Compile( ciEnv* ci_env,
                   DirectiveSet* directive)
   : Phase(Compiler),
     _compile_id(0),
-    _subsume_loads(true),
-    _do_escape_analysis(false),
-    _install_code(true),
-    _eliminate_boxing(false),
-    _do_locks_coarsening(false),
+    _options(Options::for_runtime_stub()),
     _method(NULL),
     _entry_bci(InvocationEntryBci),
     _stub_function(stub_function),
@@ -1030,8 +1027,9 @@ void Compile::Init(int aliaslevel) {
   //   Type::update_loaded_types(_method, _method->constants());
 
   // Init alias_type map.
-  if (!_do_escape_analysis && aliaslevel == 3)
+  if (!do_escape_analysis() && aliaslevel == 3) {
     aliaslevel = 2;  // No unique types without escape analysis
+  }
   _AliasLevel = aliaslevel;
   const int grow_ats = 16;
   _max_alias_types = grow_ats;
@@ -2152,7 +2150,7 @@ void Compile::Optimize() {
   remove_root_to_sfpts_edges(igvn);
 
   // Perform escape analysis
-  if (_do_escape_analysis && ConnectionGraph::has_candidates(this)) {
+  if (do_escape_analysis() && ConnectionGraph::has_candidates(this)) {
     if (has_loops()) {
       // Cleanup graph (remove dead nodes).
       TracePhase tp("idealLoop", &timers[_t_idealLoop]);
@@ -2160,27 +2158,39 @@ void Compile::Optimize() {
       if (major_progress()) print_method(PHASE_PHASEIDEAL_BEFORE_EA, 2);
       if (failing())  return;
     }
-    ConnectionGraph::do_analysis(this, &igvn);
 
-    if (failing())  return;
-
-    // Optimize out fields loads from scalar replaceable allocations.
-    igvn.optimize();
-    print_method(PHASE_ITER_GVN_AFTER_EA, 2);
-
-    if (failing())  return;
-
-    if (congraph() != NULL && macro_count() > 0) {
-      TracePhase tp("macroEliminate", &timers[_t_macroEliminate]);
-      PhaseMacroExpand mexp(igvn);
-      mexp.eliminate_macro_nodes();
-      igvn.set_delay_transform(false);
-
-      igvn.optimize();
-      print_method(PHASE_ITER_GVN_AFTER_ELIMINATION, 2);
+    bool progress;
+    do {
+      ConnectionGraph::do_analysis(this, &igvn);
 
       if (failing())  return;
-    }
+
+      int mcount = macro_count(); // Record number of allocations and locks before IGVN
+
+      // Optimize out fields loads from scalar replaceable allocations.
+      igvn.optimize();
+      print_method(PHASE_ITER_GVN_AFTER_EA, 2);
+
+      if (failing())  return;
+
+      if (congraph() != NULL && macro_count() > 0) {
+        TracePhase tp("macroEliminate", &timers[_t_macroEliminate]);
+        PhaseMacroExpand mexp(igvn);
+        mexp.eliminate_macro_nodes();
+        if (failing())  return;
+
+        igvn.set_delay_transform(false);
+        igvn.optimize();
+        print_method(PHASE_ITER_GVN_AFTER_ELIMINATION, 2);
+
+        if (failing())  return;
+      }
+      progress = do_iterative_escape_analysis() &&
+                 (macro_count() < mcount) &&
+                 ConnectionGraph::has_candidates(this);
+      // Try again if candidates exist and made progress
+      // by removing some allocations and/or locks.
+    } while (progress);
   }
 
   // Loop transforms on the ideal graph.  Range Check Elimination,

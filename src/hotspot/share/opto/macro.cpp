@@ -34,6 +34,7 @@
 #include "opto/castnode.hpp"
 #include "opto/cfgnode.hpp"
 #include "opto/compile.hpp"
+#include "opto/c2compiler.hpp"
 #include "opto/convertnode.hpp"
 #include "opto/graphKit.hpp"
 #include "opto/intrinsicnode.hpp"
@@ -452,8 +453,8 @@ Node *PhaseMacroExpand::value_from_mem(Node *sfpt_mem, Node *sfpt_ctl, BasicType
   int alias_idx = C->get_alias_index(adr_t);
   int offset = adr_t->offset();
   Node *start_mem = C->start()->proj_out_or_null(TypeFunc::Memory);
-  Node *alloc_ctrl = alloc->in(TypeFunc::Control);
   Node *alloc_mem = alloc->in(TypeFunc::Memory);
+  Node *alloc_ctrl = alloc->in(TypeFunc::Control);
   VectorSet visited;
 
   bool done = sfpt_mem == alloc_mem;
@@ -534,7 +535,7 @@ Node *PhaseMacroExpand::value_from_mem(Node *sfpt_mem, Node *sfpt_ctl, BasicType
     } else if (mem->is_ArrayCopy()) {
       Node* ctl = mem->in(0);
       Node* m = mem->in(TypeFunc::Memory);
-      if (sfpt_ctl->is_Proj() && sfpt_ctl->as_Proj()->is_uncommon_trap_proj(Deoptimization::Reason_none)) {
+      if (sfpt_ctl != NULL && sfpt_ctl->is_Proj() && sfpt_ctl->as_Proj()->is_uncommon_trap_proj(Deoptimization::Reason_none)) {
         // pin the loads in the uncommon trap path
         ctl = sfpt_ctl;
         m = sfpt_mem;
@@ -547,7 +548,7 @@ Node *PhaseMacroExpand::value_from_mem(Node *sfpt_mem, Node *sfpt_ctl, BasicType
 }
 
 // Check the possibility of scalar replacement.
-bool PhaseMacroExpand::can_eliminate_allocation(AllocateNode *alloc, GrowableArray <SafePointNode *>& safepoints) {
+bool PhaseMacroExpand::can_eliminate_allocation(AllocateNode *alloc, GrowableArray <SafePointNode *>& safepoints, GrowableArray <ReducedAllocationMergeNode *>& rams) {
   //  Scan the uses of the allocation to check for anything that would
   //  prevent us from eliminating it.
   NOT_PRODUCT( const char* fail_eliminate = NULL; )
@@ -610,6 +611,9 @@ bool PhaseMacroExpand::can_eliminate_allocation(AllocateNode *alloc, GrowableArr
                   use->as_ArrayCopy()->is_copyofrange_validated()) &&
                  use->in(ArrayCopyNode::Dest) == res) {
         // ok to eliminate
+      } else if (use->is_ReducedAllocationMerge()) {
+        // also ok to eliminate
+        rams.append_if_missing(use->as_ReducedAllocationMerge());
       } else if (use->is_SafePoint()) {
         SafePointNode* sfpt = use->as_SafePoint();
         if (sfpt->is_Call() && sfpt->as_Call()->has_non_debug_use(res)) {
@@ -674,7 +678,7 @@ bool PhaseMacroExpand::can_eliminate_allocation(AllocateNode *alloc, GrowableArr
 }
 
 // Do scalar replacement.
-bool PhaseMacroExpand::scalar_replacement(AllocateNode *alloc, GrowableArray <SafePointNode *>& safepoints) {
+bool PhaseMacroExpand::scalar_replacement(AllocateNode *alloc, GrowableArray <SafePointNode *>& safepoints, GrowableArray <ReducedAllocationMergeNode *>& rams) {
   GrowableArray <SafePointNode *> safepoints_done;
 
   ciKlass* klass = NULL;
@@ -709,6 +713,76 @@ bool PhaseMacroExpand::scalar_replacement(AllocateNode *alloc, GrowableArray <Sa
       element_size = type2aelembytes(basic_elem_type);
     }
   }
+
+  //
+  // Process the Reduced Allocation Merges uses
+  //
+  while (rams.length() > 0) {
+    ReducedAllocationMergeNode* ram = rams.pop();
+
+    _igvn.hash_delete(ram);
+
+    // Scan object's fields adding an input to the RAM for each field.
+    for (int j = 0; j < nfields; j++) {
+      const Type *field_type;
+      // iklass wont be null here because RAM only merge instance types
+      assert(iklass != NULL, "iklass shouldn't be NULL here.");
+      ciField* field = iklass->nonstatic_field_at(j);
+      intptr_t offset = field->offset();
+      ciType* elem_type = field->type();
+      basic_elem_type = field->layout_type();
+
+      if (!ram->needs_field(offset)) {
+        continue;
+      }
+
+      if (is_reference_type(basic_elem_type)) {
+        if (!elem_type->is_loaded()) {
+          field_type = TypeInstPtr::BOTTOM;
+        } else if (field != NULL && field->is_static_constant()) {
+          // This can happen if the constant oop is non-perm.
+          ciObject* con = field->constant_value().as_object();
+          // Do not "join" in the previous type; it doesn't add value,
+          // and may yield a vacuous result if the field is of interface type.
+          field_type = TypeOopPtr::make_from_constant(con)->isa_oopptr();
+          assert(field_type != NULL, "field singleton type must be consistent");
+        } else {
+          field_type = TypeOopPtr::make_from_klass(elem_type->as_klass());
+        }
+        if (UseCompressedOops) {
+          field_type = field_type->make_narrowoop();
+          basic_elem_type = T_NARROWOOP;
+        }
+      } else {
+        field_type = Type::get_const_basic_type(basic_elem_type);
+      }
+
+      // Because the same base might be registered multiple times in the Phi / RAM, we
+      // need to iterate on the different memory inputs that each base might be registered
+      // to use.
+      uint previous_matches = 0;
+      while (true) {
+        Node *memory = ram->memory_for(offset, res, previous_matches);
+
+        if (memory == NULL) {
+          break;
+        }
+
+        const TypeOopPtr *field_addr_type = res_type->add_offset(offset)->isa_oopptr();
+        Node *field_val = value_from_mem(memory, NULL, basic_elem_type, field_type, field_addr_type, alloc);
+
+        assert(field_val != NULL, "Didn't find value for field!!!");
+
+        ram->register_value_for_field(offset, res, field_val, previous_matches);
+
+        previous_matches++;
+      }
+    }
+
+    _igvn.hash_insert(ram);
+    _igvn._worklist.push(ram);
+  }
+
   //
   // Process the safepoint uses
   //
@@ -930,6 +1004,11 @@ void PhaseMacroExpand::process_users_of_allocation(CallNode *alloc) {
           }
         }
         _igvn._worklist.push(ac);
+      } else if (use->is_ReducedAllocationMerge()) {
+        _igvn.hash_delete(use);
+        use->replace_edge(res, C->top());
+        _igvn.hash_insert(use);
+        _igvn._worklist.push(use);
       } else {
         eliminate_gc_barrier(use);
       }
@@ -1032,7 +1111,8 @@ bool PhaseMacroExpand::eliminate_allocate_node(AllocateNode *alloc) {
   alloc->extract_projections(&_callprojs, false /*separate_io_proj*/, false /*do_asserts*/);
 
   GrowableArray <SafePointNode *> safepoints;
-  if (!can_eliminate_allocation(alloc, safepoints)) {
+  GrowableArray <ReducedAllocationMergeNode *> rams;
+  if (!can_eliminate_allocation(alloc, safepoints, rams)) {
     return false;
   }
 
@@ -1046,7 +1126,7 @@ bool PhaseMacroExpand::eliminate_allocate_node(AllocateNode *alloc) {
     }
   }
 
-  if (!scalar_replacement(alloc, safepoints)) {
+  if (!scalar_replacement(alloc, safepoints, rams)) {
     return false;
   }
 
@@ -1112,6 +1192,180 @@ bool PhaseMacroExpand::eliminate_boxing_node(CallStaticJavaNode *boxing) {
     tty->cr();
   }
 #endif
+
+  return true;
+}
+
+bool PhaseMacroExpand::eliminate_reduced_allocation_merge(ReducedAllocationMergeNode *ram) {
+  ciKlass* klass             = ram->klass();
+  ciInstanceKlass* iklass    = klass->as_instance_klass();
+  int nfields                = iklass->nof_nonstatic_fields();
+  const TypeOopPtr* res_type = _igvn.type(ram)->isa_oopptr();
+
+  for (DUIterator_Fast imax, i = ram->fast_outs(imax); i < imax; i++) {
+    Node* use = ram->fast_out(i);
+
+    if (use->is_AddP()) {
+      Node* addp = use; // just for readability
+      jlong offset = addp->in(AddPNode::Offset)->find_long_con(-1);
+
+      assert(offset != -1, "Didn't find constant offset for AddP.");
+
+      Node* value_phi = ram->value_phi_for_field(offset, &_igvn);
+
+      if (value_phi == NULL) {
+        C->record_failure(C2Compiler::retry_no_reduce_allocation_merges());
+        return false;
+      }
+
+      _igvn._worklist.push(value_phi);
+
+      for (DUIterator_Fast jmax, j = addp->fast_outs(jmax); j < jmax; j++) {
+        Node* addp_use = addp->fast_out(j);
+
+        if (addp_use->is_Load()) {
+          Node* load = addp_use; // just for readability
+
+          for (DUIterator_Last kmin, k = load->last_outs(kmin); k >= kmin;) {
+            Node* load_use = load->last_out(k);
+
+            _igvn.hash_delete(load_use);
+            int removed = load_use->replace_edge(load, value_phi, &_igvn);
+            _igvn.hash_insert(load_use);
+            _igvn._worklist.push(load_use);
+
+            assert(removed > 0, "should be at least 1.");
+            k -= removed;
+          }
+        }
+        else {
+          assert(false, "Unexpected use of AddP.");
+          return false;
+        }
+      }
+    }
+    else if (use->Opcode() == Op_SafePoint || use->is_CallStaticJava()) {
+      Node* sfpt = use;
+      assert(sfpt->jvms() != NULL, "missed JVMS");
+
+      // Fields of scalar objs are referenced only at the end
+      // of regular debuginfo at the last (youngest) JVMS.
+      // Record relative start index.
+      uint first_ind = (sfpt->req() - sfpt->jvms()->scloff());
+      SafePointScalarObjectNode* sobj = new SafePointScalarObjectNode(res_type,
+                                                                      #ifdef ASSERT
+                                                                        ram,
+                                                                      #endif
+                                                                        first_ind,
+                                                                        nfields);
+      sobj->init_req(0, C->root());
+      transform_later(sobj);
+
+      // Scan object's fields adding an input to the safepoint for each field.
+      for (int j = 0; j < nfields; j++) {
+        ciField* field = iklass->nonstatic_field_at(j);
+        jlong offset = field->offset();
+        ciType* elem_type = field->type();
+        BasicType basic_elem_type = field->layout_type();
+        const Type *field_type;
+
+        // The next code is taken from Parse::do_get_xxx().
+        if (is_reference_type(basic_elem_type)) {
+          if (!elem_type->is_loaded()) {
+            field_type = TypeInstPtr::BOTTOM;
+          } else if (field != NULL && field->is_static_constant()) {
+            // This can happen if the constant oop is non-perm.
+            ciObject* con = field->constant_value().as_object();
+            // Do not "join" in the previous type; it doesn't add value,
+            // and may yield a vacuous result if the field is of interface type.
+            field_type = TypeOopPtr::make_from_constant(con)->isa_oopptr();
+            assert(field_type != NULL, "field singleton type must be consistent");
+          } else {
+            field_type = TypeOopPtr::make_from_klass(elem_type->as_klass());
+          }
+          if (UseCompressedOops) {
+            field_type = field_type->make_narrowoop();
+          }
+        } else {
+          field_type = Type::get_const_basic_type(basic_elem_type);
+        }
+
+        Node* field_val = ram->value_phi_for_field(offset, &_igvn);
+
+        if (field_val == NULL) {
+          C->record_failure(C2Compiler::retry_no_reduce_allocation_merges());
+          return false;
+        }
+
+        _igvn._worklist.push(field_val);
+
+        if (UseCompressedOops && field_type->isa_narrowoop()) {
+          field_val = transform_later(new DecodeNNode(field_val, field_val->get_ptr_type()));
+        }
+
+        sfpt->add_req(field_val);
+      }
+
+      JVMState *jvms = sfpt->jvms();
+      jvms->set_endoff(sfpt->req());
+      // Now make a pass over the debug information replacing any references
+      // to the allocated object with "sobj"
+      int start    = jvms->debug_start();
+      int end      = jvms->debug_end();
+      int replaced = sfpt->replace_edges_in_range(ram, sobj, start, end, &_igvn);
+      _igvn._worklist.push(sfpt);
+
+      assert(replaced > 0, "should be at least 1.");
+      --i;
+      imax -= replaced;
+    }
+    else if (use->is_DecodeN()) {
+      for (DUIterator_Fast jmax, j = use->fast_outs(jmax); j < jmax; j++) {
+        Node* addp = use->fast_out(j);
+
+        jlong offset = addp->in(AddPNode::Offset)->find_long_con(-1);
+
+        assert(offset != -1, "Didn't find constant offset for AddP.");
+
+        Node* value_phi = ram->value_phi_for_field(offset, &_igvn);
+
+        if (value_phi == NULL) {
+          C->record_failure(C2Compiler::retry_no_reduce_allocation_merges());
+          return false;
+        }
+
+        _igvn._worklist.push(value_phi);
+
+        for (DUIterator_Fast kmax, k = addp->fast_outs(kmax); k < kmax; k++) {
+          Node* addp_use = addp->fast_out(k);
+
+          if (addp_use->is_Load()) {
+            Node* load = addp_use; // just for readability
+
+            for (DUIterator_Last lmin, l = load->last_outs(lmin); l >= lmin;) {
+              Node* load_use = load->last_out(l);
+
+              _igvn.hash_delete(load_use);
+              int removed = load_use->replace_edge(load, value_phi, &_igvn);
+              _igvn.hash_insert(load_use);
+              _igvn._worklist.push(load_use);
+
+              assert(removed > 0, "should be at least 1.");
+              l -= removed;
+            }
+          }
+          else {
+            assert(false, "Unexpected use of AddP.");
+            return false;
+          }
+        }
+      }
+    }
+    else {
+      assert(false, "Unknown use of RAM. %d:%s", use->_idx, use->Name());
+      return false;
+    }
+  }
 
   return true;
 }
@@ -2545,6 +2799,9 @@ void PhaseMacroExpand::eliminate_macro_nodes() {
       case Node::Class_CallStaticJava:
         success = eliminate_boxing_node(n->as_CallStaticJava());
         break;
+      case Node::Class_ReducedAllocationMerge:
+        // Needs to be processed after all others
+        break;
       case Node::Class_Lock:
       case Node::Class_Unlock:
         assert(!n->as_AbstractLock()->is_eliminated(), "sanity");
@@ -2568,6 +2825,27 @@ void PhaseMacroExpand::eliminate_macro_nodes() {
       }
       assert(success == (C->macro_count() < old_macro_count), "elimination reduces macro count");
       progress = progress || success;
+    }
+  }
+
+  // Next, try to eliminate reduced allocation merges
+  if (ReduceAllocationMerges) {
+    for (int i = C->macro_count(); i > 0; i--) {
+      Node* n = C->macro_node(i - 1);
+      if (n->is_ReducedAllocationMerge()) {
+        // In some cases the region controlling the RAM might go away due to some simplification
+        // of the IR graph. For now, we'll just bail out if this happens.
+        if (n->in(0) == NULL || !n->in(0)->is_Region()) {
+          C->record_failure(C2Compiler::retry_no_reduce_allocation_merges());
+          return;
+        }
+
+        bool success = eliminate_reduced_allocation_merge(n->as_ReducedAllocationMerge());
+        if (!success) {
+          C->record_failure(C2Compiler::retry_no_reduce_allocation_merges());
+          return;
+        }
+      }
     }
   }
 }

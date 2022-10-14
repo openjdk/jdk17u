@@ -152,6 +152,7 @@ class ProjNode;
 class RangeCheckNode;
 class RegMask;
 class RegionNode;
+class ReducedAllocationMergeNode;
 class RootNode;
 class SafePointNode;
 class SafePointScalarObjectNode;
@@ -707,6 +708,7 @@ public:
         DEFINE_CLASS_ID(EncodePKlass, EncodeNarrowPtr, 1)
       DEFINE_CLASS_ID(Vector, Type, 7)
         DEFINE_CLASS_ID(VectorMaskCmp, Vector, 0)
+      DEFINE_CLASS_ID(ReducedAllocationMerge,   Type, 8)
 
     DEFINE_CLASS_ID(Proj,  Node, 3)
       DEFINE_CLASS_ID(CatchProj, Proj, 0)
@@ -937,6 +939,7 @@ public:
   DEFINE_CLASS_QUERY(StoreVectorScatter)
   DEFINE_CLASS_QUERY(VectorMaskCmp)
   DEFINE_CLASS_QUERY(Unlock)
+  DEFINE_CLASS_QUERY(ReducedAllocationMerge)
 
   #undef DEFINE_CLASS_QUERY
 

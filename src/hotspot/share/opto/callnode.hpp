@@ -27,7 +27,9 @@
 
 #include "opto/connode.hpp"
 #include "opto/mulnode.hpp"
+#include "opto/addnode.hpp"
 #include "opto/multnode.hpp"
+#include "opto/cfgnode.hpp"
 #include "opto/opcodes.hpp"
 #include "opto/phaseX.hpp"
 #include "opto/replacednodes.hpp"
@@ -738,6 +740,7 @@ public:
 
   // If this is an uncommon trap, return the request code, else zero.
   int uncommon_trap_request() const;
+  bool is_uncommon_trap() const;
   static int extract_uncommon_trap_request(const Node* call);
 
   bool is_boxing_method() const {
@@ -1046,6 +1049,82 @@ public:
            ? NULL : allo->as_AllocateArray();
   }
 };
+
+// This node is used during SR to simplify allocation merges.
+// It's in this file just because it's closely related to allocation.
+//
+// Before elimination of macro nodes start, some Phi nodes that merge
+// object allocations are replaced by a ReducedAllocationMergeNode (aka RAM).
+// The users (mostly fields) of the merged allocation are _registered_ in
+// the RAM node. During allocation node removal (macro node expansion /
+// scalar replacement), if an allocation is used by a RAM node, the
+// nodes producing value for fields registered in the
+// RAM, are also registered in the RAM node (in association with
+// corresponding allocation base).
+// After the inputs to the RAM node are scalar replaced the RAM node
+// itself is scalar replaced. This consist basically in replacing the
+// use(s) of the merged allocation field(s) value by a new Phi node
+// merging the value produced in the different inputs to the RAM node.
+// In some cases a reference to the whole merged object is needed and
+// we handle that by creating an SafePointScalarObjectNode.
+class ReducedAllocationMergeNode : public TypeNode {
+private:
+  ciKlass* _klass;                  // Which Klass is the merge for
+
+  uint _number_of_bases;            // Number of bases to the original Phi
+
+  Dict* _fields_and_memories;
+
+public:
+  ReducedAllocationMergeNode(Compile* C, PhaseIterGVN* igvn, const ConnectionGraph* cg, const PhiNode* phi) ;
+
+  virtual int Opcode() const;
+
+  ciKlass* klass() const { return _klass; }
+
+  uint number_of_bases() const { return _number_of_bases; }
+
+  const DictI needed_offsets() const { return DictI(_fields_and_memories); }
+
+  int field_idx(jlong offset) const {
+    assert(offset > 0, "Offset should be positive.");
+    return (intptr_t) ((*_fields_and_memories)[(void*)offset]);
+  }
+
+  int base_idx(Node* base, uint previous_matches) const {
+    assert(base != NULL, "Base shouldn't be NULL.");
+    for (uint i = 1, matches = 0; i <= _number_of_bases; i++) {
+      if (base == in(i)) {
+        matches++;
+        if (matches > previous_matches) {
+          return i-1;
+        }
+      }
+    }
+
+    return -1;
+  }
+
+  bool needs_field(intptr_t offset) const {
+    return (*_fields_and_memories)[(void*)offset] != NULL;
+  }
+
+  void initialize_memory_edges(Compile* C, PhaseIterGVN* igvn);
+  void register_addp(AddPNode* n);
+  void register_offset_of_all_fields(Node* memory);
+  void register_offset(jlong offset, Node* memory);
+  bool register_use(Node* n);
+
+  Node* memory_for(jlong field, Node* base, uint previous_matches) const;
+
+  void register_value_for_field(jlong field, Node* base, Node* value, uint previous_matches) ;
+
+  Node* make_load(Node* ctrl, Node* base, Node* mem, jlong offset, PhaseIterGVN* igvn);
+  Node* value_phi_for_field(jlong field, PhaseIterGVN* igvn) ;
+
+  static ReducedAllocationMergeNode* make(Compile* C, PhaseIterGVN* igvn, const ConnectionGraph* cg, PhiNode* phi) ;
+};
+
 
 //------------------------------AbstractLockNode-----------------------------------
 class AbstractLockNode: public CallNode {

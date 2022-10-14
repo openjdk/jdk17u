@@ -208,18 +208,21 @@ public:
     }
   }
 
-  int edge_count()              const { return _edges.length(); }
-  PointsToNode* edge(int e)     const { return _edges.at(e); }
-  bool add_edge(PointsToNode* edge)   { return _edges.append_if_missing(edge); }
+  int edge_count()              const    { return _edges.length(); }
+  PointsToNode* edge(int e)     const    { return _edges.at(e); }
+  bool add_edge(PointsToNode* edge)      { return _edges.append_if_missing(edge); }
+  bool remove_edge(PointsToNode* edge)   { return _edges.remove_if_existing(edge); }
 
-  int use_count()             const { return _uses.length(); }
-  PointsToNode* use(int e)    const { return _uses.at(e); }
-  bool add_use(PointsToNode* use)   { return _uses.append_if_missing(use); }
+  int use_count()             const    { return _uses.length(); }
+  PointsToNode* use(int e)    const    { return _uses.at(e); }
+  bool add_use(PointsToNode* use)      { return _uses.append_if_missing(use); }
+  bool remove_use(PointsToNode* use)   { _uses.remove(use); return true; }
 
   // Mark base edge use to distinguish from stored value edge.
-  bool add_base_use(FieldNode* use) { return _uses.append_if_missing((PointsToNode*)((intptr_t)use + 1)); }
-  static bool is_base_use(PointsToNode* use) { return (((intptr_t)use) & 1); }
+  bool add_base_use(FieldNode* use)                    { return _uses.append_if_missing((PointsToNode*)((intptr_t)use + 1)); }
+  static bool is_base_use(PointsToNode* use)           { return (((intptr_t)use) & 1); }
   static PointsToNode* get_use_node(PointsToNode* use) { return (PointsToNode*)(((intptr_t)use) & ~1); }
+  bool remove_base_use(FieldNode* use)                 { _uses.remove((PointsToNode*)((intptr_t)use + 1)); return true; }
 
   // Return true if this node points to specified node or nodes it points to.
   bool points_to(JavaObjectNode* ptn) const;
@@ -266,9 +269,10 @@ public:
   bool     has_unknown_base()    const { return _has_unknown_base; }
   void set_has_unknown_base()          { _has_unknown_base = true; }
 
-  int base_count()              const { return _bases.length(); }
-  PointsToNode* base(int e)     const { return _bases.at(e); }
+  int base_count()              const  { return _bases.length(); }
+  PointsToNode* base(int e)     const  { return _bases.at(e); }
   bool add_base(PointsToNode* base)    { return _bases.append_if_missing(base); }
+  bool remove_base(PointsToNode* base) { _bases.remove(base); return true; }
 #ifdef ASSERT
   // Return true if bases points to this java object.
   bool has_base(JavaObjectNode* ptn) const;
@@ -340,6 +344,7 @@ private:
 
   Unique_Node_List ideal_nodes; // Used by CG construction and types splitting.
 
+  int              _invocation; // Current number of analysis invocation
   int        _build_iterations; // Number of iterations took to build graph
   double           _build_time; // Time (sec) took to build graph
 
@@ -353,6 +358,12 @@ private:
     // growableArray::at() will throw assert otherwise.
     return _nodes.at(idx);
   }
+
+  // Check if the ideal node with ID 'idx' is present in the Connection Graph.
+  bool is_ideal_node_in_graph(uint idx) const {
+    return idx < nodes_size() && _nodes.at(idx) != NULL;
+  }
+
   uint nodes_size() const { return _nodes.length(); }
 
   uint next_pidx() { return _next_pidx++; }
@@ -462,9 +473,6 @@ private:
   // Optimize objects compare.
   const TypeInt* optimize_ptr_compare(Node* n);
 
-  // Returns unique corresponding java object or NULL.
-  JavaObjectNode* unique_java_object(Node *n);
-
   // Add an edge of the specified type pointing to the specified target.
   bool add_edge(PointsToNode* from, PointsToNode* to) {
     assert(!from->is_Field() || from->as_Field()->is_oop(), "sanity");
@@ -526,11 +534,11 @@ private:
   // Helper methods for unique types split.
   bool split_AddP(Node *addp, Node *base);
 
-  PhiNode *create_split_phi(PhiNode *orig_phi, int alias_idx, GrowableArray<PhiNode *>  &orig_phi_worklist, bool &new_created);
-  PhiNode *split_memory_phi(PhiNode *orig_phi, int alias_idx, GrowableArray<PhiNode *>  &orig_phi_worklist);
+  PhiNode *create_split_phi(PhiNode *orig_phi, int alias_idx, GrowableArray<PhiNode *>  *orig_phi_worklist, bool &new_created);
+  PhiNode *split_memory_phi(PhiNode *orig_phi, int alias_idx, GrowableArray<PhiNode *>  *orig_phi_worklist);
 
-  void  move_inst_mem(Node* n, GrowableArray<PhiNode *>  &orig_phis);
-  Node* find_inst_mem(Node* mem, int alias_idx,GrowableArray<PhiNode *>  &orig_phi_worklist);
+  void  move_inst_mem(Node* n, GrowableArray<PhiNode *>  *orig_phis);
+  Node* find_inst_mem(Node* mem, int alias_idx,GrowableArray<PhiNode *>  *orig_phi_worklist = NULL);
   Node* step_through_mergemem(MergeMemNode *mmem, int alias_idx, const TypeOopPtr *toop);
 
 
@@ -569,8 +577,33 @@ private:
   // Compute the escape information
   bool compute_escape();
 
+  // -------------------------------------------
+  // Methods related to Reduce Allocation Merges
+
+  // Returns true if there is a Store node dominated by
+  // 'merge_phi_region' for which the associated AddP uses
+  // 'base' as Base.
+  bool is_read_only(Node* merge_phi_region, Node* base) const;
+
+  const Node* come_from_allocate(const Node* n) const;
+
+  // Performs several checks to see if the Phi pointed by 'n'
+  // can be reduced into a ReducedAllocationMergeNode. The
+  // checks curently implemented are:
+  //  - The phi node should be NoEscape
+  //  - The Phi region must not dominate any store to any of the Phi inputs
+  //  - All inputs to the Phi node should come from an allocate node
+  //  - All inputs should be NoEscape
+  //  - The only uses of the Phi should be:
+  //    - AddP->Load
+  //    - SafePointNode or uncommon traps
+  //    - DecodeN->AddP->Loads
+  bool can_reduce_this_phi(const Node* n) const;
+  bool can_reduce_this_phi_users(const Node* phi, bool& has_call_as_user) const;
+
+  bool reduce_this_phi(PhiNode* n);
 public:
-  ConnectionGraph(Compile *C, PhaseIterGVN *igvn);
+  ConnectionGraph(Compile *C, PhaseIterGVN *igvn, int iteration);
 
   // Check for non-escaping candidates
   static bool has_candidates(Compile *C);
@@ -578,10 +611,18 @@ public:
   // Perform escape analysis
   static void do_analysis(Compile *C, PhaseIterGVN *igvn);
 
+  // Perform simplification of allocation merges by reducing Phi
+  // nodes that merge scalar replaceable object allocations into
+  // a ReduceAllocationMergeNode.
+  int reduce_allocation_merges();
+
   bool not_global_escape(Node *n);
 
   // To be used by, e.g., BarrierSetC2 impls
   Node* get_addp_base(Node* addp);
+
+  // Returns unique corresponding java object or NULL.
+  JavaObjectNode* unique_java_object(Node *n) const;
 
   // Utility function for nodes that load an object
   void add_objload_to_connection_graph(Node* n, Unique_Node_List* delayed_worklist);
@@ -601,6 +642,24 @@ public:
     }
     add_edge(ptnode_adr(n->_idx), ptn);
   }
+
+  // Remove a Phi node (LocalVar) from the graph and update the edges accordingly.
+  // Note that users of the Phi node that are - due the Phi - fields of multiple
+  // Java objects will be disconnected from the JavaObject. Given a graph like this:
+  //
+  // JavaObject(3) NoEscape(NoEscape) Edges: [ 91F 206F       ] Uses: [ 40 45 183   ]   28  Allocate ...
+  // JavaObject(4) NoEscape(NoEscape) Edges: [ 172F 206F      ] Uses: [ 119 124 183 ]  107  Allocate ...
+  // LocalVar(11)  NoEscape(NoEscape) Edges: [ 40 28P         ] Uses: [ 183         ]   45  CheckCastPP ...
+  // LocalVar(12)  NoEscape(NoEscape) Edges: [ 119 107P       ] Uses: [ 183         ]  124  CheckCastPP ...
+  // LocalVar(14)  NoEscape(NoEscape) Edges: [ 124 45 28P 107P] Uses: [ 206b        ]  183  Phi ...
+  //
+  // It will become this:
+  //
+  // JavaObject(3) NoEscape(NoEscape) Edges: [ 91F ----       ] Uses: [ 40 45 ---   ]   28  Allocate ...
+  // JavaObject(4) NoEscape(NoEscape) Edges: [ 172F ----      ] Uses: [ 119 124 --- ]  107  Allocate ...
+  // LocalVar(12)  NoEscape(NoEscape) Edges: [ 119 107P       ] Uses: [ ---         ]  124  CheckCastPP ...
+  // LocalVar(11)  NoEscape(NoEscape) Edges: [ 40 28P         ] Uses: [ ---         ]   45  CheckCastPP ...
+  void remove_phi_node(PointsToNode* ptn);
 
   // Map ideal node to existing PointsTo node (usually phantom_object).
   void map_ideal_node(Node *n, PointsToNode* ptn) {

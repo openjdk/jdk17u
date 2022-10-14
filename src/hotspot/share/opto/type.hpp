@@ -1143,6 +1143,14 @@ class TypeInstPtr : public TypeOopPtr {
 
   bool  is_loaded() const { return _klass->is_loaded(); }
 
+  // Instance klass, ignoring any interface
+  ciInstanceKlass* instance_klass() const {
+    if (klass()->is_loaded() && klass()->is_interface()) {
+      return Compile::current()->env()->Object_klass();
+    }
+    return klass()->as_instance_klass();
+  }
+
   // Make a pointer to a constant oop.
   static const TypeInstPtr *make(ciObject* o) {
     return make(TypePtr::Constant, o->klass(), true, o, 0, InstanceBot);
