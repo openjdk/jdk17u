@@ -611,11 +611,7 @@ static void scalarize_debug_usages(CallNode* call, Node* resproj) {
   for (DUIterator_Last imin, i = res->last_outs(imin); i >= imin;) {
     SafePointNode* sfpt = res->last_out(i)->as_SafePoint();
     uint first_ind = sfpt->req() - sfpt->jvms()->scloff();
-    Node* sobj = new SafePointScalarObjectNode(gvn.type(res)->isa_oopptr(),
-#ifdef ASSERT
-                                                call,
-#endif // ASSERT
-                                                first_ind, n_fields, true);
+    Node* sobj = new SafePointScalarObjectNode(gvn.type(res)->isa_oopptr(), call, first_ind, n_fields, true);
     sobj->init_req(0, kit.root());
     sfpt->add_req(call->in(TypeFunc::Parms));
     sobj = gvn.transform(sobj);

@@ -819,21 +819,46 @@ void PhaseOutput::FillLocArray( int idx, MachSafePointNode* sfpt, Node *local,
   // Is it a safepoint scalar object node?
   if (local->is_SafePointScalarObject()) {
     SafePointScalarObjectNode* spobj = local->as_SafePointScalarObject();
-
-    ObjectValue* sv = sv_for_node_id(objs, spobj->_idx);
-    if (sv == NULL) {
+    ObjectValue* sv = (ObjectValue*) sv_for_node_id(objs, spobj->_idx);
+    if (sv == nullptr) {
       ciKlass* cik = t->is_oopptr()->klass();
       assert(cik->is_instance_klass() ||
-             cik->is_array_klass(), "Not supported allocation.");
-      ScopeValue* klass_sv = new ConstantOopWriteValue(cik->java_mirror()->constant_encoding());
-      sv = spobj->is_auto_box() ? new AutoBoxObjectValue(spobj->_idx, klass_sv)
-                                    : new ObjectValue(spobj->_idx, klass_sv);
+            cik->is_array_klass(), "Not supported allocation.");
+      sv = new ObjectValue(spobj->_idx,
+                           new ConstantOopWriteValue(cik->java_mirror()->constant_encoding()),
+                           spobj->is_only_merge_sr_candidate());
       set_sv_for_object_node(objs, sv);
 
       uint first_ind = spobj->first_index(sfpt->jvms());
       for (uint i = 0; i < spobj->n_fields(); i++) {
         Node* fld_node = sfpt->in(first_ind+i);
         (void)FillLocArray(sv->field_values()->length(), sfpt, fld_node, sv->field_values(), objs);
+      }
+    }
+
+    array->append(sv);
+    return;
+  } else if (local->is_SafePointScalarMerge()) {
+    SafePointScalarMergeNode* smerge = local->as_SafePointScalarMerge();
+    ObjectMergeValue* sv = (ObjectMergeValue*) sv_for_node_id(objs, smerge->_idx);
+
+    if (sv == NULL) {
+      GrowableArray<ScopeValue*> deps;
+
+      int merge_pointer_idx = smerge->merge_pointer_idx(sfpt->jvms());
+      (void)FillLocArray(0, NULL, sfpt->in(merge_pointer_idx), &deps, NULL);
+      assert(deps.length() == 1, "missing value");
+
+      int selector_idx = smerge->selector_idx(sfpt->jvms());
+      (void)FillLocArray(1, NULL, sfpt->in(selector_idx), &deps, NULL);
+      assert(deps.length() == 2, "missing value");
+
+      sv = new ObjectMergeValue(smerge->_idx, deps.at(0), deps.at(1));
+      set_sv_for_object_node(objs, sv);
+
+      for (uint i = 1; i < smerge->req(); i++) {
+        Node* fld_node = smerge->in(i);
+        (void)FillLocArray(sv->possible_objects()->length(), sfpt, fld_node, sv->possible_objects(), objs);
       }
     }
     array->append(sv);
@@ -1089,19 +1114,19 @@ void PhaseOutput::Process_OopMap_Node(MachNode *mach, int current_offset) {
       Node* obj_node = sfn->monitor_obj(jvms, idx);
 
       // Create ScopeValue for object
-      ScopeValue *scval = NULL;
+      ScopeValue *scval = nullptr;
 
       if (obj_node->is_SafePointScalarObject()) {
         SafePointScalarObjectNode* spobj = obj_node->as_SafePointScalarObject();
         scval = PhaseOutput::sv_for_node_id(objs, spobj->_idx);
-        if (scval == NULL) {
+        if (scval == nullptr) {
           const Type *t = spobj->bottom_type();
           ciKlass* cik = t->is_oopptr()->klass();
           assert(cik->is_instance_klass() ||
                  cik->is_array_klass(), "Not supported allocation.");
           ScopeValue* klass_sv = new ConstantOopWriteValue(cik->java_mirror()->constant_encoding());
-          ObjectValue* sv = spobj->is_auto_box() ? new AutoBoxObjectValue(spobj->_idx, klass_sv)
-                                        : new ObjectValue(spobj->_idx, klass_sv);
+          ObjectValue* sv = spobj->is_auto_box() ? new AutoBoxObjectValue(spobj->_idx, klass_sv, spobj->is_only_merge_sr_candidate())
+                                        : new ObjectValue(spobj->_idx, klass_sv, spobj->is_only_merge_sr_candidate());
           PhaseOutput::set_sv_for_object_node(objs, sv);
 
           uint first_ind = spobj->first_index(youngest_jvms);
