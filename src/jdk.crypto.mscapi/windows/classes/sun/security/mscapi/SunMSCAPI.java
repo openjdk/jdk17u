@@ -99,6 +99,8 @@ public final class SunMSCAPI extends Provider {
                         return new CKeyStore.MYLocalMachine();
                     } else if (algo.equals("Windows-ROOT-LOCALMACHINE")) {
                         return new CKeyStore.ROOTLocalMachine();
+                    } else if (algo.equals("Windows-SST")) {
+                        return new CKeyStore.SST();
                     }
                 } else if (type.equals("Signature")) {
                     if (algo.equals("NONEwithRSA")) {
@@ -167,6 +169,8 @@ public final class SunMSCAPI extends Provider {
                 /*
                  * Key store
                  */
+                putService(new ProviderService(p, "KeyStore",
+                           "Windows-SST", "sun.security.mscapi.CKeyStore$SST"));
                 putService(new ProviderService(p, "KeyStore",
                            "Windows-MY", "sun.security.mscapi.CKeyStore$MY"));
                 putService(new ProviderService(p, "KeyStore",
