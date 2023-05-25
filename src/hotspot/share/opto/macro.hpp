@@ -92,8 +92,8 @@ private:
   void expand_allocate_common(AllocateNode* alloc,
                               Node* length,
                               const TypeFunc* slow_call_type,
-                              address slow_call_address);
-  void yank_initalize_node(InitializeNode* node);
+                              address slow_call_address,
+                              Node* valid_length_test);
   void yank_alloc_node(AllocateNode* alloc);
 
   bool eliminate_boxing_node(CallStaticJavaNode *boxing);
