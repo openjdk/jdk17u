@@ -1,0 +1,12 @@
+title: Support Windows serialized keystores (SST files)
+- work_item: '1784731'
+- jbs_bug: 'JDK-8306688'
+- author: macarte
+- owner: macarte
+- contributors:
+ - macarte
+- details:
+ - add code to read keystores from serialized source
+ - leverage existing APIs to pass stream into keystore load
+ - add new keystore type Windows-SST
+- release_note: 'Support Windows serialized keystores (SST files)'
