@@ -486,7 +486,11 @@ void internal_loadKeysOrCertificateChains
             else
             {
                 if (bCallerFreeProv == TRUE) {
-                    ::CryptReleaseContext(hCryptProv, NULL); // deprecated
+                    if ((dwKeySpec & CERT_NCRYPT_KEY_SPEC) == CERT_NCRYPT_KEY_SPEC) {
+                        NCryptFreeObject(hCryptProv);
+                    } else {
+                        ::CryptReleaseContext(hCryptProv, NULL); // deprecated
+                    }
                     bCallerFreeProv = FALSE;
                 }
 

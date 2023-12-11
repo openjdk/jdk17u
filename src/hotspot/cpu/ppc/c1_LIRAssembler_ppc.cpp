@@ -812,12 +812,7 @@ int LIR_Assembler::load(Register base, int offset, LIR_Opr to_reg, BasicType typ
       case T_LONG  :   __ ld(to_reg->as_register_lo(), offset, base); break;
       case T_METADATA: __ ld(to_reg->as_register(), offset, base); break;
       case T_ADDRESS:
-        if (offset == oopDesc::klass_offset_in_bytes() && UseCompressedClassPointers) {
-          __ lwz(to_reg->as_register(), offset, base);
-          __ decode_klass_not_null(to_reg->as_register());
-        } else {
-          __ ld(to_reg->as_register(), offset, base);
-        }
+        __ ld(to_reg->as_register(), offset, base);
         break;
       case T_ARRAY : // fall through
       case T_OBJECT:
@@ -828,7 +823,6 @@ int LIR_Assembler::load(Register base, int offset, LIR_Opr to_reg, BasicType typ
           } else {
             __ ld(to_reg->as_register(), offset, base);
           }
-          __ verify_oop(to_reg->as_register(), FILE_AND_LINE);
           break;
         }
       case T_FLOAT:  __ lfs(to_reg->as_float_reg(), offset, base); break;
@@ -859,7 +853,6 @@ int LIR_Assembler::load(Register base, Register disp, LIR_Opr to_reg, BasicType 
         } else {
           __ ldx(to_reg->as_register(), base, disp);
         }
-        __ verify_oop(to_reg->as_register(), FILE_AND_LINE);
         break;
       }
     case T_FLOAT:  __ lfsx(to_reg->as_float_reg() , base, disp); break;
@@ -2735,6 +2728,26 @@ void LIR_Assembler::emit_lock(LIR_OpLock* op) {
   __ bind(*op->stub()->continuation());
 }
 
+void LIR_Assembler::emit_load_klass(LIR_OpLoadKlass* op) {
+  Register obj = op->obj()->as_pointer_register();
+  Register result = op->result_opr()->as_pointer_register();
+
+  CodeEmitInfo* info = op->info();
+  if (info != NULL) {
+    if (!os::zero_page_read_protected() || !ImplicitNullChecks) {
+      explicit_null_check(obj, info);
+    } else {
+      add_debug_info_for_null_check_here(info);
+    }
+  }
+
+  if (UseCompressedClassPointers) {
+    __ lwz(result, oopDesc::klass_offset_in_bytes(), obj);
+    __ decode_klass_not_null(result);
+  } else {
+    __ ld(result, oopDesc::klass_offset_in_bytes(), obj);
+  }
+}
 
 void LIR_Assembler::emit_profile_call(LIR_OpProfileCall* op) {
   ciMethod* method = op->profiled_method();

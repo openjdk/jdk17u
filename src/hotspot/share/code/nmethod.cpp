@@ -67,6 +67,7 @@
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/signature.hpp"
 #include "runtime/sweeper.hpp"
+#include "runtime/threadWXSetters.inline.hpp"
 #include "runtime/vmThread.hpp"
 #include "utilities/align.hpp"
 #include "utilities/copy.hpp"
@@ -1657,6 +1658,8 @@ void nmethod::post_compiled_method_load_event(JvmtiThreadState* state) {
     if (is_not_entrant() && can_convert_to_zombie()) {
       return;
     }
+    // Ensure the sweeper can't collect this nmethod until it become "active" with JvmtiThreadState::nmethods_do.
+    mark_as_seen_on_stack();
   }
 
   // This is a bad time for a safepoint.  We don't want
@@ -1829,7 +1832,8 @@ bool nmethod::is_unloading() {
   // oops in the CompiledMethod, by calling oops_do on it.
   state_unloading_cycle = current_cycle;
 
-  if (is_zombie() || method()->can_be_allocated_in_NonNMethod_space()) {
+  Method* m = method();
+  if (is_zombie() || (m != nullptr && m->can_be_allocated_in_NonNMethod_space())) {
     // When the nmethod is in NonNMethod space, we may reach here without IsUnloadingBehaviour.
     // However, we only allow this for special methods which never get unloaded.
 
@@ -2261,7 +2265,11 @@ PcDesc* PcDescContainer::find_pc_desc_internal(address pc, bool approximate, con
 
   if (match_desc(upper, pc_offset, approximate)) {
     assert(upper == linear_search(search, pc_offset, approximate), "search ok");
-    _pc_desc_cache.add_pc_desc(upper);
+    if (!Thread::current_in_asgct()) {
+      // we don't want to modify the cache if we're in ASGCT
+      // which is typically called in a signal handler
+      _pc_desc_cache.add_pc_desc(upper);
+    }
     return upper;
   } else {
     assert(NULL == linear_search(search, pc_offset, approximate), "search ok");
@@ -2570,7 +2578,7 @@ void nmethod::print(outputStream* st) const {
     st->print("(n/a) ");
   }
 
-  print_on(tty, NULL);
+  print_on(st, NULL);
 
   if (WizardMode) {
     st->print("((nmethod*) " INTPTR_FORMAT ") ", p2i(this));
@@ -2921,6 +2929,9 @@ void nmethod::decode2(outputStream* ost) const {
                                                                   AbstractDisassembler::show_block_comment());
 #endif
 
+  // Decoding an nmethod can write to a PcDescCache (see PcDescCache::add_pc_desc)
+  MACOS_AARCH64_ONLY(ThreadWXEnable wx(WXWrite, Thread::current());)
+
   st->cr();
   this->print(st);
   st->cr();
@@ -2930,7 +2941,10 @@ void nmethod::decode2(outputStream* ost) const {
   //---<  Print real disassembly  >---
   //----------------------------------
   if (! use_compressed_format) {
+    st->print_cr("[Disassembly]");
     Disassembler::decode(const_cast<nmethod*>(this), st);
+    st->bol();
+    st->print_cr("[/Disassembly]");
     return;
   }
 #endif

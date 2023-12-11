@@ -2267,7 +2267,7 @@ void G1CollectedHeap::object_iterate(ObjectClosure* cl) {
   heap_region_iterate(&blk);
 }
 
-class G1ParallelObjectIterator : public ParallelObjectIterator {
+class G1ParallelObjectIterator : public ParallelObjectIteratorImpl {
 private:
   G1CollectedHeap*  _heap;
   HeapRegionClaimer _claimer;
@@ -2282,7 +2282,7 @@ public:
   }
 };
 
-ParallelObjectIterator* G1CollectedHeap::parallel_object_iterator(uint thread_num) {
+ParallelObjectIteratorImpl* G1CollectedHeap::parallel_object_iterator(uint thread_num) {
   return new G1ParallelObjectIterator(thread_num);
 }
 
@@ -2292,7 +2292,7 @@ void G1CollectedHeap::object_iterate_parallel(ObjectClosure* cl, uint worker_id,
 }
 
 void G1CollectedHeap::keep_alive(oop obj) {
-  G1BarrierSet::enqueue(obj);
+  G1BarrierSet::enqueue_preloaded(obj);
 }
 
 void G1CollectedHeap::heap_region_iterate(HeapRegionClosure* cl) const {

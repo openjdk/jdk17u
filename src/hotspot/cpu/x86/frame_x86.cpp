@@ -64,8 +64,11 @@ bool frame::safe_for_sender(JavaThread *thread) {
     return false;
   }
 
-  // unextended sp must be within the stack and above or equal sp
-  if (!thread->is_in_stack_range_incl(unextended_sp, sp)) {
+  // unextended sp must be within the stack
+  // Note: sp can be greater than unextended_sp in the case of
+  // interpreted -> interpreted calls that go through a method handle linker,
+  // since those pop the last argument (the appendix) from the stack.
+  if (!thread->is_in_stack_range_incl(unextended_sp, sp - Interpreter::stackElementSize)) {
     return false;
   }
 
@@ -554,7 +557,7 @@ bool frame::is_interpreted_frame_valid(JavaThread* thread) const {
   // do some validation of frame elements
   // first the method
 
-  Method* m = *interpreter_frame_method_addr();
+  Method* m = safe_interpreter_frame_method();
 
   // validate the method we'd find in this potential sender
   if (!Method::is_valid_method(m)) return false;

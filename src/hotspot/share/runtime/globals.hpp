@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -67,21 +67,22 @@
 //    option, you must first specify +UnlockDiagnosticVMOptions.
 //    (This master switch also affects the behavior of -Xprintflags.)
 //
-// EXPERIMENTAL flags are in support of features that are not
-//    part of the officially supported product, but are available
+// EXPERIMENTAL flags are in support of features that may not be
+//    an officially supported part of a product, but may be available
 //    for experimenting with. They could, for example, be performance
 //    features that may not have undergone full or rigorous QA, but which may
 //    help performance in some cases and released for experimentation
 //    by the community of users and developers. This flag also allows one to
 //    be able to build a fully supported product that nonetheless also
 //    ships with some unsupported, lightly tested, experimental features.
+//    Refer to the documentation of any products using this code for details
+//    on support and fitness for production.
 //    Like the UnlockDiagnosticVMOptions flag above, there is a corresponding
 //    UnlockExperimentalVMOptions flag, which allows the control and
 //    modification of the experimental flags.
 //
 // Nota bene: neither diagnostic nor experimental options should be used casually,
-//    and they are not supported on production loads, except under explicit
-//    direction from support engineers.
+//    Refer to the documentation of any products using this code for details.
 //
 // MANAGEABLE flags are writeable external product flags.
 //    They are dynamically writeable through the JDK management interface
@@ -700,6 +701,13 @@ const intx ObjectAlignmentInBytes = 8;
           "MonitorUsedDeflationThreshold is exceeded (0 is off).")          \
           range(0, max_jint)                                                \
                                                                             \
+  /* notice: the max range value here is max_jint, not max_intx  */         \
+  /* because of overflow issue                                   */         \
+  product(intx, GuaranteedAsyncDeflationInterval, 60000, DIAGNOSTIC,        \
+          "Async deflate idle monitors every so many milliseconds even "    \
+          "when MonitorUsedDeflationThreshold is NOT exceeded (0 is off).") \
+          range(0, max_jint)                                                \
+                                                                            \
   product(size_t, AvgMonitorsPerThreadEstimate, 1024, DIAGNOSTIC,           \
           "Used to estimate a variable ceiling based on number of threads " \
           "for use with MonitorUsedDeflationThreshold (0 is off).")         \
@@ -714,8 +722,9 @@ const intx ObjectAlignmentInBytes = 8;
                                                                             \
   product(intx, MonitorUsedDeflationThreshold, 90, DIAGNOSTIC,              \
           "Percentage of used monitors before triggering deflation (0 is "  \
-          "off). The check is performed on GuaranteedSafepointInterval "    \
-          "or AsyncDeflationInterval.")                                     \
+          "off). The check is performed on GuaranteedSafepointInterval, "   \
+          "AsyncDeflationInterval or GuaranteedAsyncDeflationInterval, "    \
+          "whichever is lower.")                                            \
           range(0, 100)                                                     \
                                                                             \
   product(uintx, NoAsyncDeflationProgressMax, 3, DIAGNOSTIC,                \
@@ -908,10 +917,6 @@ const intx ObjectAlignmentInBytes = 8;
   develop(bool, FLSVerifyDictionary, false,                                 \
           "Do lots of (expensive) FLS dictionary verification")             \
                                                                             \
-                                                                            \
-  notproduct(bool, CheckMemoryInitialization, false,                        \
-          "Check memory initialization")                                    \
-                                                                            \
   product(uintx, ProcessDistributionStride, 4,                              \
           "Stride through processors when distributing processes")          \
           range(0, max_juint)                                               \
@@ -976,9 +981,6 @@ const intx ObjectAlignmentInBytes = 8;
           "instruction raising SIGTRAP.  This is only used if an access to" \
           "null (+offset) will not raise a SIGSEGV, i.e.,"                  \
           "ImplicitNullChecks don't work (PPC64).")                         \
-                                                                            \
-  product(bool, EnableThreadSMRExtraValidityChecks, true, DIAGNOSTIC,       \
-             "Enable Thread SMR extra validity checks")                     \
                                                                             \
   product(bool, EnableThreadSMRStatistics, trueInDebug, DIAGNOSTIC,         \
              "Enable Thread SMR Statistics")                                \
@@ -1370,6 +1372,10 @@ const intx ObjectAlignmentInBytes = 8;
                                                                             \
   develop(intx, StackPrintLimit, 100,                                       \
           "number of stack frames to print in VM-level stack dump")         \
+                                                                            \
+  product(int, ErrorLogPrintCodeLimit, 3, DIAGNOSTIC,                       \
+          "max number of compiled code units to print in error log")        \
+          range(0, VMError::max_error_log_print_code)                       \
                                                                             \
   notproduct(intx, MaxElementPrintSize, 256,                                \
           "maximum number of elements to print")                            \
@@ -1998,10 +2004,10 @@ const intx ObjectAlignmentInBytes = 8;
   product(ccstr, ExtraSharedClassListFile, NULL,                            \
           "Extra classlist for building the CDS archive file")              \
                                                                             \
-  product(intx, ArchiveRelocationMode, 0, DIAGNOSTIC,                       \
+  product(intx, ArchiveRelocationMode, 1, DIAGNOSTIC,                       \
            "(0) first map at preferred address, and if "                    \
-           "unsuccessful, map at alternative address (default); "           \
-           "(1) always map at alternative address; "                        \
+           "unsuccessful, map at alternative address; "                     \
+           "(1) always map at alternative address (default); "              \
            "(2) always map at preferred address, and if unsuccessful, "     \
            "do not map the archive")                                        \
            range(0, 2)                                                      \
@@ -2087,6 +2093,13 @@ const intx ObjectAlignmentInBytes = 8;
                                                                             \
   develop(bool, TraceOptimizedUpcallStubs, false,                              \
                 "Trace optimized upcall stub generation")                      \
+                                                                            \
+  product(uint, TrimNativeHeapInterval, 0, EXPERIMENTAL,                    \
+          "Interval, in ms, at which the JVM will trim the native heap if " \
+          "the platform supports that. Lower values will reclaim memory "   \
+          "more eagerly at the cost of higher overhead. A value of 0 "      \
+          "(default) disables native heap trimming.")                       \
+          range(0, UINT_MAX)                                                \
 
 // end of RUNTIME_FLAGS
 
