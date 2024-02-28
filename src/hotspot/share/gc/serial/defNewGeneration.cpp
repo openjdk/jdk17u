@@ -198,6 +198,10 @@ void DefNewGeneration::compute_space_boundaries(uintx minimum_eden_size,
   uintx size = _virtual_space.committed_size();
   uintx survivor_size = compute_survivor_size(size, SpaceAlignment);
   uintx eden_size = size - (2*survivor_size);
+  if (eden_size > max_eden_size()) {
+    eden_size = max_eden_size();
+    survivor_size = (size - eden_size)/2;
+  }
   assert(eden_size > 0 && survivor_size <= eden_size, "just checking");
 
   if (eden_size < minimum_eden_size) {
@@ -841,9 +845,6 @@ void DefNewGeneration::gc_epilogue(bool full) {
     } else if (seen_incremental_collection_failed) {
       log_trace(gc)("DefNewEpilogue: cause(%s), not full, seen_failed, will_clear_seen_failed",
                             GCCause::to_string(gch->gc_cause()));
-      assert(gch->gc_cause() == GCCause::_scavenge_alot ||
-             !gch->incremental_collection_failed(),
-             "Twice in a row");
       seen_incremental_collection_failed = false;
     }
 #endif // ASSERT

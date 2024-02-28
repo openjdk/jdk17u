@@ -23,10 +23,10 @@
 
 package compiler.lib.ir_framework;
 
-import compiler.lib.ir_framework.driver.IRMatcher;
+import compiler.lib.ir_framework.driver.irmatching.IRMatcher;
 import compiler.lib.ir_framework.shared.*;
 import jdk.test.lib.Platform;
-import sun.hotspot.WhiteBox;
+import jdk.test.whitebox.WhiteBox;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,13 +53,13 @@ public class IRNode {
     private static final String STORE_OF_CLASS_POSTFIX = "(:|\\+)\\S* \\*" + END;
     private static final String LOAD_OF_CLASS_POSTFIX = "(:|\\+)\\S* \\*" + END;
 
-    public static final String ALLOC = "(.*precise klass .*\\R((.*(?i:mov|xorl|nop|spill).*|\\s*|.*LGHI.*)\\R)*.*(?i:call,static).*wrapper for: _new_instance_Java" + END;
-    public static final String ALLOC_OF = COMPOSITE_PREFIX + "(.*precise klass .*" + IS_REPLACED + ":.*\\R((.*(?i:mov|xorl|nop|spill).*|\\s*|.*LGHI.*)\\R)*.*(?i:call,static).*wrapper for: _new_instance_Java" + END;
-    public static final String ALLOC_ARRAY = "(.*precise klass \\[L.*\\R((.*(?i:mov|xor|nop|spill).*|\\s*|.*LGHI.*)\\R)*.*(?i:call,static).*wrapper for: _new_array_Java" + END;
-    public static final String ALLOC_ARRAY_OF = COMPOSITE_PREFIX + "(.*precise klass \\[L.*" + IS_REPLACED + ";:.*\\R((.*(?i:mov|xorl|nop|spill).*|\\s*|.*LGHI.*)\\R)*.*(?i:call,static).*wrapper for: _new_array_Java" + END;
+    public static final String ALLOC = "(.*precise klass .*\\R((.*(?i:mov|mv|xorl|nop|spill).*|\\s*|.*LGHI.*)\\R)*.*(?i:call,static).*wrapper for: _new_instance_Java" + END;
+    public static final String ALLOC_OF = COMPOSITE_PREFIX + "(.*precise klass .*" + IS_REPLACED + ":.*\\R((.*(?i:mov|mv|xorl|nop|spill).*|\\s*|.*LGHI.*)\\R)*.*(?i:call,static).*wrapper for: _new_instance_Java" + END;
+    public static final String ALLOC_ARRAY = "(.*precise klass \\[L.*\\R((.*(?i:mov|mv|xor|nop|spill).*|\\s*|.*LGHI.*)\\R)*.*(?i:call,static).*wrapper for: _new_array_Java" + END;
+    public static final String ALLOC_ARRAY_OF = COMPOSITE_PREFIX + "(.*precise klass \\[L.*" + IS_REPLACED + ";:.*\\R((.*(?i:mov|mv|xorl|nop|spill).*|\\s*|.*LGHI.*)\\R)*.*(?i:call,static).*wrapper for: _new_array_Java" + END;
 
-    public static final String CHECKCAST_ARRAY = "(((?i:cmp|CLFI|CLR).*precise klass \\[.*;:|.*(?i:mov|or).*precise klass \\[.*;:.*\\R.*(cmp|CMP|CLR))" + END;
-    public static final String CHECKCAST_ARRAY_OF = COMPOSITE_PREFIX + "(((?i:cmp|CLFI|CLR).*precise klass \\[.*" + IS_REPLACED + ";:|.*(?i:mov|or).*precise klass \\[.*" + IS_REPLACED + ";:.*\\R.*(cmp|CMP|CLR))" + END;
+    public static final String CHECKCAST_ARRAY = "(((?i:cmp|CLFI|CLR).*precise klass \\[.*;:|.*(?i:mov|mv|or).*precise klass \\[.*;:.*\\R.*(cmp|CMP|CLR))" + END;
+    public static final String CHECKCAST_ARRAY_OF = COMPOSITE_PREFIX + "(((?i:cmp|CLFI|CLR).*precise klass \\[.*" + IS_REPLACED + ";:|.*(?i:mov|mv|or).*precise klass \\[.*" + IS_REPLACED + ";:.*\\R.*(cmp|CMP|CLR))" + END;
     // Does not work on s390 (a rule containing this regex will be skipped on s390).
     public static final String CHECKCAST_ARRAYCOPY = "(.*((?i:call_leaf_nofp,runtime)|CALL,\\s?runtime leaf nofp|BCTRL.*.leaf call).*checkcast_arraycopy.*" + END;
 
@@ -113,6 +113,7 @@ public class IRNode {
     public static final String LOOP   = START + "Loop" + MID + END;
     public static final String COUNTEDLOOP = START + "CountedLoop\\b" + MID + END;
     public static final String COUNTEDLOOP_MAIN = START + "CountedLoop\\b" + MID + "main" + END;
+    public static final String OUTERSTRIPMINEDLOOP = START + "OuterStripMinedLoop\\b" + MID + END;
 
     public static final String CALL = START + "Call.*Java" + MID + END;
     public static final String CALL_OF_METHOD = COMPOSITE_PREFIX + START + "Call.*Java" + MID + IS_REPLACED + " " +  END;
@@ -132,6 +133,17 @@ public class IRNode {
 
     public static final String SCOPE_OBJECT = "(.*# ScObj.*" + END;
     public static final String MEMBAR = START + "MemBar" + MID + END;
+    public static final String MEMBAR_STORESTORE = START + "MemBarStoreStore" + MID + END;
+    public static final String SAFEPOINT = START + "SafePoint" + MID + END;
+
+    public static final String CMP_U = START + "CmpU" + MID + END;
+    public static final String CMP_I = START + "CmpI" + MID + END;
+    public static final String MUL_I = START + "MulI" + MID + END;
+    public static final String MUL_L = START + "MulL" + MID + END;
+    public static final String POPCOUNT_L = START + "PopCountL" + MID + END;
+
+    public static final String FAST_LOCK   = START + "FastLock" + MID + END;
+    public static final String FAST_UNLOCK = START + "FastUnlock" + MID + END;
 
     /**
      * Called by {@link IRMatcher} to merge special composite nodes together with additional user-defined input.

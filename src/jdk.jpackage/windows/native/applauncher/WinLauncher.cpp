@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 
 #include <io.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <windows.h>
 
 #include "AppLauncher.h"
@@ -33,6 +34,7 @@
 #include "Dll.h"
 #include "WinApp.h"
 #include "Toolbox.h"
+#include "Executor.h"
 #include "FileUtils.h"
 #include "UniqueHandle.h"
 #include "ErrorHandling.h"
@@ -152,37 +154,35 @@ void launchApp() {
     std::unique_ptr<Jvm> jvm(appLauncher.createJvmLauncher());
 
     if (restart) {
+        jvm->setEnvVariables();
+
         jvm = std::unique_ptr<Jvm>();
 
-        STARTUPINFOW si;
-        ZeroMemory(&si, sizeof(si));
-        si.cb = sizeof(si);
-
-        PROCESS_INFORMATION pi;
-        ZeroMemory(&pi, sizeof(pi));
-
-        if (!CreateProcessW(launcherPath.c_str(), GetCommandLineW(),
-                NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-            JP_THROW(SysError(tstrings::any() << "CreateProcessW() failed",
-                                                            CreateProcessW));
+        UniqueHandle jobHandle(CreateJobObject(NULL, NULL));
+        if (jobHandle.get() == NULL) {
+            JP_THROW(SysError(tstrings::any() << "CreateJobObject() failed",
+                                                            CreateJobObject));
+        }
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo = { };
+        jobInfo.BasicLimitInformation.LimitFlags =
+                                          JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(jobHandle.get(),
+                JobObjectExtendedLimitInformation, &jobInfo, sizeof(jobInfo))) {
+            JP_THROW(SysError(tstrings::any() <<
+                                            "SetInformationJobObject() failed",
+                                                    SetInformationJobObject));
         }
 
-        WaitForSingleObject(pi.hProcess, INFINITE);
+        Executor exec(launcherPath);
+        exec.visible(true).withJobObject(jobHandle.get()).suspended(true).inherit(true);
+        const auto args = SysInfo::getCommandArgs();
+        std::for_each(args.begin(), args.end(), [&exec] (const tstring& arg) {
+            exec.arg(arg);
+        });
 
-        UniqueHandle childProcessHandle(pi.hProcess);
-        UniqueHandle childThreadHandle(pi.hThread);
+        DWORD exitCode = static_cast<DWORD>(exec.execAndWaitForExit());
 
-        DWORD exitCode;
-        if (!GetExitCodeProcess(pi.hProcess, &exitCode)) {
-            JP_THROW(SysError(tstrings::any() << "GetExitCodeProcess() failed",
-                                                        GetExitCodeProcess));
-        }
-
-        if (exitCode != 0) {
-            JP_THROW(tstrings::any() << "Child process exited with code "
-                                                                << exitCode);
-        }
-
+        exit(exitCode);
         return;
     }
 

@@ -22,8 +22,7 @@
  *
  */
 
-// Must be at least Windows Vista or Server 2008 to use InitOnceExecuteOnce
-#define _WIN32_WINNT 0x0600
+// API level must be at least Windows Vista or Server 2008 to use InitOnceExecuteOnce
 
 // no precompiled headers
 #include "jvm.h"
@@ -56,11 +55,12 @@
 #include "runtime/orderAccess.hpp"
 #include "runtime/osThread.hpp"
 #include "runtime/perfMemory.hpp"
-#include "runtime/safefetch.inline.hpp"
+#include "runtime/safefetch.hpp"
 #include "runtime/safepointMechanism.hpp"
 #include "runtime/semaphore.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/statSampler.hpp"
+#include "runtime/stubRoutines.hpp"
 #include "runtime/thread.inline.hpp"
 #include "runtime/threadCritical.hpp"
 #include "runtime/timer.hpp"
@@ -89,6 +89,7 @@
 #include <shlobj.h>
 
 #include <malloc.h>
+#include <powerbase.h>
 #include <signal.h>
 #include <direct.h>
 #include <errno.h>
@@ -625,8 +626,10 @@ bool os::create_attached_thread(JavaThread* thread) {
 
   thread->set_osthread(osthread);
 
-  log_info(os, thread)("Thread attached (tid: " UINTX_FORMAT ").",
-    os::current_thread_id());
+  log_info(os, thread)("Thread attached (tid: " UINTX_FORMAT ", stack: "
+                       PTR_FORMAT " - " PTR_FORMAT " (" SIZE_FORMAT "K) ).",
+                       os::current_thread_id(), p2i(thread->stack_base()),
+                       p2i(thread->stack_end()), thread->stack_size() / K);
 
   return true;
 }
@@ -680,6 +683,9 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
   if (osthread == NULL) {
     return false;
   }
+
+  // Initial state is ALLOCATED but not INITIALIZED
+  osthread->set_state(ALLOCATED);
 
   // Initialize the JDK library's interrupt event.
   // This should really be done when OSThread is constructed,
@@ -743,21 +749,27 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
   // flag appears to work with _beginthredex() as well.
 
   const unsigned initflag = CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION;
-  HANDLE thread_handle =
-    (HANDLE)_beginthreadex(NULL,
-                           (unsigned)stack_size,
-                           (unsigned (__stdcall *)(void*)) thread_native_entry,
-                           thread,
-                           initflag,
-                           &thread_id);
+  HANDLE thread_handle;
+  int limit = 3;
+  do {
+    thread_handle =
+      (HANDLE)_beginthreadex(NULL,
+                             (unsigned)stack_size,
+                             (unsigned (__stdcall *)(void*)) thread_native_entry,
+                             thread,
+                             initflag,
+                             &thread_id);
+  } while (thread_handle == NULL && errno == EAGAIN && limit-- > 0);
 
+  ResourceMark rm;
   char buf[64];
   if (thread_handle != NULL) {
-    log_info(os, thread)("Thread started (tid: %u, attributes: %s)",
-      thread_id, describe_beginthreadex_attributes(buf, sizeof(buf), stack_size, initflag));
+    log_info(os, thread)("Thread \"%s\" started (tid: %u, attributes: %s)",
+                         thread->name(), thread_id,
+                         describe_beginthreadex_attributes(buf, sizeof(buf), stack_size, initflag));
   } else {
-    log_warning(os, thread)("Failed to start thread - _beginthreadex failed (%s) for attributes: %s.",
-      os::errno_name(errno), describe_beginthreadex_attributes(buf, sizeof(buf), stack_size, initflag));
+    log_warning(os, thread)("Failed to start thread \"%s\" - _beginthreadex failed (%s) for attributes: %s.",
+                            thread->name(), os::errno_name(errno), describe_beginthreadex_attributes(buf, sizeof(buf), stack_size, initflag));
     // Log some OS information which might explain why creating the thread failed.
     log_info(os, thread)("Number of threads approx. running in the VM: %d", Threads::number_of_threads());
     LogStream st(Log(os, thread)::info());
@@ -777,7 +789,7 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
   osthread->set_thread_handle(thread_handle);
   osthread->set_thread_id(thread_id);
 
-  // Initial thread state is INITIALIZED, not SUSPENDED
+  // Thread state now is INITIALIZED, not SUSPENDED
   osthread->set_state(INITIALIZED);
 
   // The thread is returned suspended (in state INITIALIZED), and is started higher up in the call chain
@@ -1246,7 +1258,18 @@ void os::die() {
 const char* os::dll_file_extension() { return ".dll"; }
 
 void  os::dll_unload(void *lib) {
-  ::FreeLibrary((HMODULE)lib);
+  char name[MAX_PATH];
+  if (::GetModuleFileName((HMODULE)lib, name, sizeof(name)) == 0) {
+    snprintf(name, MAX_PATH, "<not available>");
+  }
+  if (::FreeLibrary((HMODULE)lib)) {
+    Events::log_dll_message(NULL, "Unloaded dll \"%s\" [" INTPTR_FORMAT "]", name, p2i(lib));
+    log_info(os)("Unloaded dll \"%s\" [" INTPTR_FORMAT "]", name, p2i(lib));
+  } else {
+    const DWORD errcode = ::GetLastError();
+    Events::log_dll_message(NULL, "Attempt to unload dll \"%s\" [" INTPTR_FORMAT "] failed (error code %d)", name, p2i(lib), errcode);
+    log_info(os)("Attempt to unload dll \"%s\" [" INTPTR_FORMAT "] failed (error code %d)", name, p2i(lib), errcode);
+  }
 }
 
 void* os::dll_lookup(void *lib, const char *name) {
@@ -1517,7 +1540,7 @@ void * os::dll_load(const char *name, char *ebuf, int ebuflen) {
 
   void * result = LoadLibrary(name);
   if (result != NULL) {
-    Events::log(NULL, "Loaded shared library %s", name);
+    Events::log_dll_message(NULL, "Loaded shared library %s", name);
     // Recalculate pdb search path if a DLL was loaded successfully.
     SymbolEngine::recalc_search_path();
     log_info(os)("shared library load of %s was successful", name);
@@ -1528,7 +1551,7 @@ void * os::dll_load(const char *name, char *ebuf, int ebuflen) {
   // It may or may not be overwritten below (in the for loop and just above)
   lasterror(ebuf, (size_t) ebuflen);
   ebuf[ebuflen - 1] = '\0';
-  Events::log(NULL, "Loading shared library %s failed, error code %lu", name, errcode);
+  Events::log_dll_message(NULL, "Loading shared library %s failed, error code %lu", name, errcode);
   log_info(os)("shared library load of %s failed, error code %lu", name, errcode);
 
   if (errcode == ERROR_MOD_NOT_FOUND) {
@@ -1904,8 +1927,65 @@ void os::win32::print_windows_version(outputStream* st) {
   st->cr();
 }
 
+// Processor Power Information; missing from Windows headers
+typedef struct _PROCESSOR_POWER_INFORMATION {
+    ULONG Number;
+    ULONG MaxMhz;     // max specified clock frequency of the system processor
+    ULONG CurrentMhz; // max specified processor clock frequency mult. by current processor throttle
+    ULONG MhzLimit;   // max specified processor clock frequency mult. by current processor thermal throttle limit
+    ULONG MaxIdleState;
+    ULONG CurrentIdleState;
+} PROCESSOR_POWER_INFORMATION;
+
 void os::pd_print_cpu_info(outputStream* st, char* buf, size_t buflen) {
-  // Nothing to do for now.
+  int proc_count = os::processor_count();
+  // handle potential early cases where processor count is not yet set
+  if (proc_count < 1) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    proc_count = si.dwNumberOfProcessors;
+  }
+
+  size_t sz_check = sizeof(PROCESSOR_POWER_INFORMATION) * (size_t)proc_count;
+  NTSTATUS status = ::CallNtPowerInformation(ProcessorInformation, nullptr, 0, buf, (ULONG) buflen);
+  int max_mhz = -1, current_mhz = -1, mhz_limit = -1;
+  bool same_vals_for_all_cpus = true;
+
+  if (status == ERROR_SUCCESS) {
+    PROCESSOR_POWER_INFORMATION* pppi = (PROCESSOR_POWER_INFORMATION*) buf;
+    for (int i = 0; i < proc_count; i++) {
+      if (i == 0) {
+        max_mhz = (int) pppi->MaxMhz;
+        current_mhz = (int) pppi->CurrentMhz;
+        mhz_limit = (int) pppi->MhzLimit;
+      } else {
+        if (max_mhz != (int) pppi->MaxMhz ||
+            current_mhz != (int) pppi->CurrentMhz ||
+            mhz_limit != (int) pppi->MhzLimit) {
+          same_vals_for_all_cpus = false;
+          break;
+        }
+      }
+      // avoid iteration in case buf is too small to hold all proc infos
+      if (sz_check > buflen) break;
+      pppi++;
+    }
+
+    if (same_vals_for_all_cpus && max_mhz != -1) {
+      st->print_cr("Processor Information for all %d processors :", proc_count);
+      st->print_cr("  Max Mhz: %d, Current Mhz: %d, Mhz Limit: %d", max_mhz, current_mhz, mhz_limit);
+      return;
+    }
+    // differing values, iterate again
+    pppi = (PROCESSOR_POWER_INFORMATION*) buf;
+    for (int i = 0; i < proc_count; i++) {
+      st->print_cr("Processor Information for processor %d", (int) pppi->Number);
+      st->print_cr("  Max Mhz: %d, Current Mhz: %d, Mhz Limit: %d",
+                     (int) pppi->MaxMhz, (int) pppi->CurrentMhz, (int) pppi->MhzLimit);
+      if (sz_check > buflen) break;
+      pppi++;
+    }
+  }
 }
 
 void os::get_summary_cpu_info(char* buf, size_t buflen) {
@@ -2247,6 +2327,15 @@ static void jdk_misc_signal_init() {
 
   // Add a CTRL-C handler
   SetConsoleCtrlHandler(consoleHandler, TRUE);
+
+  // Initialize sigbreakHandler.
+  // The actual work for handling CTRL-BREAK is performed by the Signal
+  // Dispatcher thread, which is created and started at a much later point,
+  // see os::initialize_jdk_signal_support(). Any CTRL-BREAK received
+  // before the Signal Dispatcher thread is started is queued up via the
+  // pending_signals[SIGBREAK] counter, and will be processed by the
+  // Signal Dispatcher thread in a delayed fashion.
+  os::signal(SIGBREAK, os::user_handler());
 }
 
 void os::signal_notify(int sig) {
@@ -2495,11 +2584,6 @@ LONG WINAPI topLevelExceptionFilter(struct _EXCEPTION_POINTERS* exceptionInfo) {
   address pc = (address) exceptionInfo->ContextRecord->Eip;
 #endif
   Thread* t = Thread::current_or_null_safe();
-
-  // Handle SafeFetch32 and SafeFetchN exceptions.
-  if (StubRoutines::is_safefetch_fault(pc)) {
-    return Handle_Exception(exceptionInfo, StubRoutines::continuation_for_safefetch_fault(pc));
-  }
 
 #ifndef _WIN64
   // Execution protection violation - win32 running on AMD64 only
@@ -3444,9 +3528,6 @@ bool os::pd_release_memory_special(char* base, size_t bytes) {
   return pd_release_memory(base, bytes);
 }
 
-void os::print_statistics() {
-}
-
 static void warn_fail_commit_memory(char* addr, size_t bytes, bool exec) {
   int err = os::get_last_error();
   char buf[256];
@@ -4370,7 +4451,8 @@ jint os::init_2(void) {
 
   SymbolEngine::recalc_search_path();
 
-  // Initialize data for jdk.internal.misc.Signal
+  // Initialize data for jdk.internal.misc.Signal, and install CTRL-C and
+  // CTRL-BREAK handlers.
   if (!ReduceSignalUsage) {
     jdk_misc_signal_init();
   }

@@ -61,7 +61,7 @@
 #include "runtime/os.hpp"
 #include "runtime/osThread.hpp"
 #include "runtime/perfMemory.hpp"
-#include "runtime/safefetch.inline.hpp"
+#include "runtime/safefetch.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/statSampler.hpp"
 #include "runtime/thread.inline.hpp"
@@ -814,19 +814,24 @@ bool os::create_thread(Thread* thread, ThreadType thr_type,
     ret = pthread_attr_setguardsize(&attr, 0);
   }
 
+  ResourceMark rm;
   pthread_t tid = 0;
+
   if (ret == 0) {
-    ret = pthread_create(&tid, &attr, (void* (*)(void*)) thread_native_entry, thread);
+    int limit = 3;
+    do {
+      ret = pthread_create(&tid, &attr, (void* (*)(void*)) thread_native_entry, thread);
+    } while (ret == EAGAIN && limit-- > 0);
   }
 
   if (ret == 0) {
     char buf[64];
-    log_info(os, thread)("Thread started (pthread id: " UINTX_FORMAT ", attributes: %s). ",
-      (uintx) tid, os::Posix::describe_pthread_attr(buf, sizeof(buf), &attr));
+    log_info(os, thread)("Thread \"%s\" started (pthread id: " UINTX_FORMAT ", attributes: %s). ",
+                         thread->name(), (uintx) tid, os::Posix::describe_pthread_attr(buf, sizeof(buf), &attr));
   } else {
     char buf[64];
-    log_warning(os, thread)("Failed to start thread - pthread_create failed (%d=%s) for attributes: %s.",
-      ret, os::errno_name(ret), os::Posix::describe_pthread_attr(buf, sizeof(buf), &attr));
+    log_warning(os, thread)("Failed to start thread \"%s\" - pthread_create failed (%d=%s) for attributes: %s.",
+                            thread->name(), ret, os::errno_name(ret), os::Posix::describe_pthread_attr(buf, sizeof(buf), &attr));
     // Log some OS information which might explain why creating the thread failed.
     log_info(os, thread)("Number of threads approx. running in the VM: %d", Threads::number_of_threads());
     LogStream st(Log(os, thread)::info());
@@ -898,8 +903,10 @@ bool os::create_attached_thread(JavaThread* thread) {
   // and save the caller's signal mask
   PosixSignals::hotspot_sigmask(thread);
 
-  log_info(os, thread)("Thread attached (tid: " UINTX_FORMAT ", kernel thread id: " UINTX_FORMAT ").",
-    os::current_thread_id(), (uintx) kernel_thread_id);
+  log_info(os, thread)("Thread attached (tid: " UINTX_FORMAT ", kernel thread  id: " UINTX_FORMAT
+                       ", stack: " PTR_FORMAT " - " PTR_FORMAT " (" SIZE_FORMAT "K) ).",
+                       os::current_thread_id(), (uintx) kernel_thread_id,
+                       p2i(thread->stack_base()), p2i(thread->stack_end()), thread->stack_size() / K);
 
   return true;
 }
@@ -1156,7 +1163,7 @@ void *os::dll_load(const char *filename, char *ebuf, int ebuflen) {
   // RTLD_LAZY is currently not implemented. The dl is loaded immediately with all its dependants.
   void * result= ::dlopen(filename, RTLD_LAZY);
   if (result != NULL) {
-    Events::log(NULL, "Loaded shared library %s", filename);
+    Events::log_dll_message(NULL, "Loaded shared library %s", filename);
     // Reload dll cache. Don't do this in signal handling.
     LoadedLibraries::reload();
     log_info(os)("shared library load of %s was successful", filename);
@@ -1171,19 +1178,10 @@ void *os::dll_load(const char *filename, char *ebuf, int ebuflen) {
       snprintf(ebuf, ebuflen - 1, "%s, LIBPATH=%s, LD_LIBRARY_PATH=%s : %s",
                filename, ::getenv("LIBPATH"), ::getenv("LD_LIBRARY_PATH"), error_report);
     }
-    Events::log(NULL, "Loading shared library %s failed, %s", filename, error_report);
+    Events::log_dll_message(NULL, "Loading shared library %s failed, %s", filename, error_report);
     log_info(os)("shared library load of %s failed, %s", filename, error_report);
   }
   return NULL;
-}
-
-void* os::dll_lookup(void* handle, const char* name) {
-  void* res = dlsym(handle, name);
-  return res;
-}
-
-void* os::get_default_process_handle() {
-  return (void*)::dlopen(NULL, RTLD_LAZY);
 }
 
 void os::print_dll_info(outputStream *st) {
@@ -2069,36 +2067,33 @@ static bool checked_mprotect(char* addr, size_t size, int prot) {
   //
   if (!os::Aix::xpg_sus_mode()) {
 
-    if (CanUseSafeFetch32()) {
+    const bool read_protected =
+      (SafeFetch32((int*)addr, 0x12345678) == 0x12345678 &&
+       SafeFetch32((int*)addr, 0x76543210) == 0x76543210) ? true : false;
 
-      const bool read_protected =
-        (SafeFetch32((int*)addr, 0x12345678) == 0x12345678 &&
-         SafeFetch32((int*)addr, 0x76543210) == 0x76543210) ? true : false;
+    if (prot & PROT_READ) {
+      rc = !read_protected;
+    } else {
+      rc = read_protected;
+    }
 
-      if (prot & PROT_READ) {
-        rc = !read_protected;
-      } else {
-        rc = read_protected;
-      }
+    if (!rc) {
+      if (os::Aix::on_pase()) {
+        // There is an issue on older PASE systems where mprotect() will return success but the
+        // memory will not be protected.
+        // This has nothing to do with the problem of using mproect() on SPEC1170 incompatible
+        // machines; we only see it rarely, when using mprotect() to protect the guard page of
+        // a stack. It is an OS error.
+        //
+        // A valid strategy is just to try again. This usually works. :-/
 
-      if (!rc) {
-        if (os::Aix::on_pase()) {
-          // There is an issue on older PASE systems where mprotect() will return success but the
-          // memory will not be protected.
-          // This has nothing to do with the problem of using mproect() on SPEC1170 incompatible
-          // machines; we only see it rarely, when using mprotect() to protect the guard page of
-          // a stack. It is an OS error.
-          //
-          // A valid strategy is just to try again. This usually works. :-/
-
-          ::usleep(1000);
-          Events::log(NULL, "Protecting memory [" INTPTR_FORMAT "," INTPTR_FORMAT "] with protection modes %x", p2i(addr), p2i(addr+size), prot);
-          if (::mprotect(addr, size, prot) == 0) {
-            const bool read_protected_2 =
-              (SafeFetch32((int*)addr, 0x12345678) == 0x12345678 &&
-              SafeFetch32((int*)addr, 0x76543210) == 0x76543210) ? true : false;
-            rc = true;
-          }
+        ::usleep(1000);
+        Events::log(NULL, "Protecting memory [" INTPTR_FORMAT "," INTPTR_FORMAT "] with protection modes %x", p2i(addr), p2i(addr+size), prot);
+        if (::mprotect(addr, size, prot) == 0) {
+          const bool read_protected_2 =
+            (SafeFetch32((int*)addr, 0x12345678) == 0x12345678 &&
+            SafeFetch32((int*)addr, 0x76543210) == 0x76543210) ? true : false;
+          rc = true;
         }
       }
     }
@@ -2202,13 +2197,6 @@ char* os::pd_attempt_reserve_memory_at(char* requested_addr, size_t bytes, bool 
   }
 
   return addr;
-}
-
-// Sleep forever; naked call to OS-specific sleep; use with CAUTION
-void os::infinite_sleep() {
-  while (true) {    // sleep forever ...
-    ::sleep(100);   // ... 100 seconds at a time
-  }
 }
 
 // Used to convert frequent JVM_Yield() to nops
@@ -2544,47 +2532,6 @@ void
 os::os_exception_wrapper(java_call_t f, JavaValue* value, const methodHandle& method,
                          JavaCallArguments* args, JavaThread* thread) {
   f(value, method, args, thread);
-}
-
-void os::print_statistics() {
-}
-
-bool os::message_box(const char* title, const char* message) {
-  int i;
-  fdStream err(defaultStream::error_fd());
-  for (i = 0; i < 78; i++) err.print_raw("=");
-  err.cr();
-  err.print_raw_cr(title);
-  for (i = 0; i < 78; i++) err.print_raw("-");
-  err.cr();
-  err.print_raw_cr(message);
-  for (i = 0; i < 78; i++) err.print_raw("=");
-  err.cr();
-
-  char buf[16];
-  // Prevent process from exiting upon "read error" without consuming all CPU
-  while (::read(0, buf, sizeof(buf)) <= 0) { ::sleep(100); }
-
-  return buf[0] == 'y' || buf[0] == 'Y';
-}
-
-// Is a (classpath) directory empty?
-bool os::dir_is_empty(const char* path) {
-  DIR *dir = NULL;
-  struct dirent *ptr;
-
-  dir = opendir(path);
-  if (dir == NULL) return true;
-
-  /* Scan the directory */
-  bool result = true;
-  while (result && (ptr = readdir(dir)) != NULL) {
-    if (strcmp(ptr->d_name, ".") != 0 && strcmp(ptr->d_name, "..") != 0) {
-      result = false;
-    }
-  }
-  closedir(dir);
-  return result;
 }
 
 // This code originates from JDK's sysOpen and open64_w

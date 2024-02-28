@@ -436,7 +436,7 @@ JVM_END
 
 
 JVM_ENTRY_NO_ENV(void, JVM_Halt(jint code))
-  before_exit(thread);
+  before_exit(thread, true);
   vm_exit(code);
 JVM_END
 
@@ -2909,6 +2909,9 @@ JVM_ENTRY(void, JVM_StartThread(JNIEnv* env, jobject jthread))
   assert(native_thread != NULL, "Starting null thread?");
 
   if (native_thread->osthread() == NULL) {
+    ResourceMark rm(thread);
+    log_warning(os, thread)("Failed to start the native thread for java.lang.Thread \"%s\"",
+                            JavaThread::name_for(JNIHandles::resolve_non_null(jthread)));
     // No one should hold a reference to the 'native_thread'.
     native_thread->smr_delete();
     if (JvmtiExport::should_post_resource_exhausted()) {
@@ -2970,12 +2973,6 @@ JVM_ENTRY(void, JVM_StopThread(JNIEnv* env, jobject jthread, jobject throwable))
     // exited setting this flag has no effect.
     java_lang_Thread::set_stillborn(java_thread);
   }
-JVM_END
-
-
-JVM_ENTRY(jboolean, JVM_IsThreadAlive(JNIEnv* env, jobject jthread))
-  oop thread_oop = JNIHandles::resolve_non_null(jthread);
-  return java_lang_Thread::is_alive(thread_oop);
 JVM_END
 
 

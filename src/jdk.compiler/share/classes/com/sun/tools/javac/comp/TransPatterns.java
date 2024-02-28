@@ -341,9 +341,8 @@ public class TransPatterns extends TreeTranslator {
             JCCase lastCase = cases.last();
 
             if (hasTotalPattern && !hasNullCase) {
-                JCCase last = lastCase;
-                if (last.labels.stream().noneMatch(l -> l.hasTag(Tag.DEFAULTCASELABEL))) {
-                    last.labels = last.labels.prepend(makeLit(syms.botType, null));
+                if (cases.stream().flatMap(c -> c.labels.stream()).noneMatch(l -> l.hasTag(Tag.DEFAULTCASELABEL))) {
+                    lastCase.labels = lastCase.labels.prepend(makeLit(syms.botType, null));
                     hasNullCase = true;
                 }
             }
@@ -665,11 +664,14 @@ public class TransPatterns extends TreeTranslator {
     @Override
     public void visitClassDef(JCClassDecl tree) {
         ClassSymbol prevCurrentClass = currentClass;
+        MethodSymbol prevMethodSym = currentMethodSym;
         try {
             currentClass = tree.sym;
+            currentMethodSym = null;
             super.visitClassDef(tree);
         } finally {
             currentClass = prevCurrentClass;
+            currentMethodSym = prevMethodSym;
         }
     }
 

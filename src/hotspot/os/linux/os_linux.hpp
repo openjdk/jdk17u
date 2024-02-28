@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2021, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -50,8 +50,6 @@ class Linux {
   static GrowableArray<int>* _cpu_to_node;
   static GrowableArray<int>* _nindex_to_node;
 
-  static size_t _default_large_page_size;
-
  protected:
 
   static julong _physical_memory;
@@ -59,8 +57,6 @@ class Linux {
   static int _page_size;
 
   static julong available_memory();
-  static julong physical_memory() { return _physical_memory; }
-  static void set_physical_memory(julong phys_mem) { _physical_memory = phys_mem; }
   static int active_processor_count();
 
   static void initialize_system_info();
@@ -76,10 +72,6 @@ class Linux {
   static void rebuild_nindex_to_node_map();
   static GrowableArray<int>* cpu_to_node()    { return _cpu_to_node; }
   static GrowableArray<int>* nindex_to_node()  { return _nindex_to_node; }
-
-  static size_t default_large_page_size();
-  static size_t scan_default_large_page_size();
-  static os::PageSizes scan_multiple_page_support();
 
   static bool setup_large_page_type(size_t page_size);
   static bool transparent_huge_pages_sanity_check(bool warn, size_t pages_size);
@@ -120,6 +112,7 @@ class Linux {
   static bool _stack_is_executable;
   static void *dlopen_helper(const char *name, char *ebuf, int ebuflen);
   static void *dll_load_in_vmthread(const char *name, char *ebuf, int ebuflen);
+  static const char *dll_path(void* lib);
 
   static void init_thread_fpu_state();
   static int  get_fpu_control_word();
@@ -134,6 +127,9 @@ class Linux {
 
   static int page_size(void)                                        { return _page_size; }
   static void set_page_size(int val)                                { _page_size = val; }
+
+  static julong physical_memory() { return _physical_memory; }
+  static julong host_swap();
 
   static intptr_t* ucontext_get_sp(const ucontext_t* uc);
   static intptr_t* ucontext_get_fp(const ucontext_t* uc);
@@ -151,6 +147,8 @@ class Linux {
 
   // Return default guard size for the specified thread type
   static size_t default_guard_size(os::ThreadType thr_type);
+
+  static bool adjustStackSizeForGuardPages(); // See comments in os_linux.cpp
 
   static void capture_initial_stack(size_t max_size);
 
