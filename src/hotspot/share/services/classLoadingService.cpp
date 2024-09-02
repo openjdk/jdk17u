@@ -193,7 +193,7 @@ bool ClassLoadingService::get_verbose() {
     // so look for all tag sets that match class+load*
     if (ts->contains(LogTag::_class) &&
         ts->contains(LogTag::_load)) {
-      LogLevelType l = ts->level_for(StdoutLog);
+      LogLevelType l = ts->level_for(&StdoutLog);
       if (l != LogLevel::Info && l != LogLevel::Debug && l != LogLevel::Trace) {
         return false;
       }
