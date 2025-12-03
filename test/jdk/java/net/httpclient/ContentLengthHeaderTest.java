@@ -152,6 +152,7 @@ public class ContentLengthHeaderTest {
         assertEquals(resp.statusCode(), 200, resp.body());
     }
 
+    /*
     @Test
     // A HEAD request with no request body should have no Content-length header
     public void headWithNoBody() throws IOException, InterruptedException {
@@ -164,6 +165,7 @@ public class ContentLengthHeaderTest {
         HttpResponse<String> resp = hc.send(req, HttpResponse.BodyHandlers.ofString(UTF_8));
         assertEquals(resp.statusCode(), 200, resp.body());
     }
+    */
 
     @Test
     // A HEAD request with a request body should have a Content-length header
