@@ -1077,10 +1077,8 @@ dpkg-deb -x /tmp/libasound2-dev_1.0.25-4_armhf.deb .
 
 #### X11
 
-You will need X11 libraries suitable for your *target* system. For most cases,
-using Debian's pre-built libraries work fine.
-
-Note that X11 is needed even if you only want to build a headless JDK.
+When not building a headless JDK, you will need X11 libraries suitable for your
+*target* system. In most cases, using Debian's pre-built libraries work fine.
 
   * Go to [Debian Package Search](https://www.debian.org/distrib/packages),
     search for the following packages for your *target* system, and download them
