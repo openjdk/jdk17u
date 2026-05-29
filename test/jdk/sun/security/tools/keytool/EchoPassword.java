@@ -28,10 +28,9 @@
  * @library /java/awt/regtesthelpers
  * @modules java.base/jdk.internal.util
  * @build PassFailJFrame
+ * @compile -encoding UTF-8 EchoPassword.java
  * @run main/manual/othervm EchoPassword
  */
-
-import jdk.internal.util.OperatingSystem;
 
 import javax.swing.JEditorPane;
 import javax.swing.JLabel;
