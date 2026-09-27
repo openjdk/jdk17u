@@ -1243,7 +1243,6 @@ public class ZipFile implements ZipConstants, Closeable {
                 // a String via zcp.toString, an Exception will be thrown
                 int clen = CENCOM(cen, pos);
                 if (clen > 0) {
-                    int elen = CENEXT(cen, pos);
                     int start = entryPos + nlen + elen;
                     zcp.toString(cen, start, clen);
                 }
